@@ -17,26 +17,11 @@ public static class ControlRestorePatch {
 
     // stores the controlling user when a battle begins and restores it in ResumeExplorationOnBattleEnd
     public static void PatchControllerWorld(UAsset controllerWorld) {
-        var gameplayStatics = controllerWorld.FindImport("GameplayStatics", "Class");
-        var playerController = controllerWorld.FindImport("PlayerController", "Class");
-        var kismetMathLibrary = controllerWorld.FindImport("KismetMathLibrary", "Class");
-        var kismetSystemLibrary = controllerWorld.FindImport("KismetSystemLibrary", "Class");
-        var getPlayerController = controllerWorld.FindImport("GetPlayerController", outer: gameplayStatics);
-        var setPlayerPlatformUserId = controllerWorld.FindImport("SetPlayerPlatformUserId", outer: gameplayStatics);
-        var notPreBool = controllerWorld.FindImport("Not_PreBool", outer: kismetMathLibrary);
-        var isValid = controllerWorld.FindImport("IsValid", outer: kismetSystemLibrary);
-        var getPlatformUserId = controllerWorld.FindOrAddFunctionImport(playerController, "GetPlatformUserId");
-        var coopControllerClass = controllerWorld.FindOrAddBlueprintClassImport("/Game/Coop/CoopController", "CoopController_C");
-        var isInBattle = controllerWorld.ExportIndex("IsInBattle");
-        var variableName = controllerWorld.Name(VariableName);
-
-        // Cast<CoopController_C>(GetPlayerController(self, 1)): the first CoopController, which exists for the whole map
-        EX_DynamicCast CoopController() => new() {
-            ClassPtr = coopControllerClass,
-            Target = new EX_CallMath { StackNode = getPlayerController, Parameters = [new EX_Self(), new EX_IntConst { Value = 1 }] }
-        };
-        EX_Context CoopVariable() => MemberOf(CoopController(), PropertyPointer(variableName, coopControllerClass));
-        EX_CallMath CoopControllerIsValid() => new() { StackNode = isValid, Parameters = [CoopController()] };
+        var expressions = new ControllerWorldExpressions(controllerWorld);
+        var setPlayerPlatformUserId = controllerWorld.FindImport("SetPlayerPlatformUserId", outer: controllerWorld.FindImport("GameplayStatics", "Class"));
+        var getPlatformUserId = controllerWorld.FindOrAddFunctionImport(controllerWorld.FindImport("PlayerController", "Class"), "GetPlatformUserId");
+        var variable = PropertyPointer(controllerWorld.Name(VariableName), expressions.CoopControllerClass);
+        EX_Context CoopVariable() => MemberOf(expressions.CoopController(), variable);
 
         // OnBattleBeginTransitionRequested sets BattleFlowState to 1 (in battle) and runs before the battle's first turn changes the user of
         // player controller 0. Only store the user when no battle is running yet, so chained battles keep the user from before the first one.
@@ -44,12 +29,10 @@ public static class ControlRestorePatch {
         {
             var func = (FunctionExport)controllerWorld["OnBattleBeginTransitionRequested"];
             KismetExpression[] store = [
-                new EX_JumpIfNot {
-                    BooleanExpression = new EX_CallMath { StackNode = notPreBool, Parameters = [new EX_LocalFinalFunction { StackNode = isInBattle, Parameters = [] }] }
-                },
-                new EX_JumpIfNot { BooleanExpression = CoopControllerIsValid() },
+                expressions.SkipIfInBattle(),
+                expressions.SkipIfNoCoopController(),
                 new EX_Let {
-                    Value = PropertyPointer(variableName, coopControllerClass),
+                    Value = variable,
                     Variable = CoopVariable(),
                     Expression = new EX_FinalFunction { StackNode = getPlatformUserId, Parameters = [] }
                 }
@@ -66,7 +49,7 @@ public static class ControlRestorePatch {
                 throw new Exception("ResumeExplorationOnBattleEnd: SetPlayerPlatformUserId call not found");
             var reset = (EX_CallMath)func.ScriptBytecode[resetIndex];
             KismetExpression[] restore = [
-                new EX_JumpIfNot { BooleanExpression = CoopControllerIsValid() },
+                expressions.SkipIfNoCoopController(),
                 new EX_CallMath { StackNode = setPlayerPlatformUserId, Parameters = [reset.Parameters[0], CoopVariable()] }
             ];
             Splice(controllerWorld, func, resetIndex + 1, 0, restore, skipTarget: true);

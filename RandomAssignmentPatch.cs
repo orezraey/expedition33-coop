@@ -97,44 +97,51 @@ public static class RandomAssignmentPatch {
         coopConfig.SyncNamesReferencedFromExportDataCount();
     }
 
-    // OnBattleBeginTransitionRequested: if (!IsInBattle() && IsValid(CoopController))
-    //   CoopController->ModActor->CoopConfig->RandomAssignmentRoll = RandomIntegerInRange(0, 7)
-    // CoopController->ModActor->CoopConfig is the config ModLibrary::LoadCoopConfig returns for every assignment lookup
+    // Bit 8 of the roll marks "keep the roll for the next battle". It is set when a battle is lost, because "Retry" ends the battle as
+    // lost and immediately requests it again, and the retried battle should keep the assignments of the lost one.
+    const int KeepRoll = 8;
+    const byte BattleLost = 2; // EBattleEndResult, set by AC_jRPG_BattleManager when all heroes are killed
+
+    // OnBattleBeginTransitionRequested (battle begins):
+    //   if (!IsInBattle() && IsValid(CoopController) && IsValid(Config))
+    //     Config->RandomAssignmentRoll = Roll >= 8 ? Roll - 8 : RandomIntegerInRange(0, 7)
+    // ResumeExplorationOnBattleEnd (battle ends):
+    //   if (BattleEndResult == Lost && IsValid(CoopController) && IsValid(Config)) Config->RandomAssignmentRoll = Roll % 8 + 8
+    // Config is CoopController->ModActor->CoopConfig, the config ModLibrary::LoadCoopConfig returns for every assignment lookup
     public static void PatchControllerWorld(UAsset controllerWorld) {
-        var gameplayStatics = controllerWorld.FindImport("GameplayStatics", "Class");
+        var expressions = new ControllerWorldExpressions(controllerWorld);
         var kismetMathLibrary = controllerWorld.FindImport("KismetMathLibrary", "Class");
-        var kismetSystemLibrary = controllerWorld.FindImport("KismetSystemLibrary", "Class");
-        var getPlayerController = controllerWorld.FindImport("GetPlayerController", outer: gameplayStatics);
-        var notPreBool = controllerWorld.FindImport("Not_PreBool", outer: kismetMathLibrary);
-        var isValid = controllerWorld.FindImport("IsValid", outer: kismetSystemLibrary);
-        var randomIntegerInRange = controllerWorld.FindOrAddFunctionImport(kismetMathLibrary, "RandomIntegerInRange");
-        var coopControllerClass = controllerWorld.FindOrAddBlueprintClassImport("/Game/Coop/CoopController", "CoopController_C");
-        var modActorClass = controllerWorld.FindOrAddBlueprintClassImport("/Game/Coop/ModActor", "ModActor_C");
-        var coopConfigClass = controllerWorld.FindOrAddBlueprintClassImport("/Game/Coop/CoopConfig", "CoopConfig_C");
-        var isInBattle = controllerWorld.ExportIndex("IsInBattle");
+        FPackageIndex Math(string name) => controllerWorld.FindOrAddFunctionImport(kismetMathLibrary, name);
+        EX_CallMath Call(string function, params KismetExpression[] parameters) => new() { StackNode = Math(function), Parameters = parameters };
+        EX_IntConst Int(int value) => new() { Value = value };
 
-        EX_DynamicCast CoopController() => new() {
-            ClassPtr = coopControllerClass,
-            Target = new EX_CallMath { StackNode = getPlayerController, Parameters = [new EX_Self(), new EX_IntConst { Value = 1 }] }
-        };
-        var roll = PropertyPointer(controllerWorld.Name(RollName), coopConfigClass);
-        var config = MemberOf(
-            MemberOf(CoopController(), PropertyPointer(controllerWorld.Name("ModActor"), coopControllerClass)),
-            PropertyPointer(controllerWorld.Name("CoopConfig"), modActorClass));
-
-        var func = (FunctionExport)controllerWorld["OnBattleBeginTransitionRequested"];
-        KismetExpression[] rollStatements = [
-            new EX_JumpIfNot {
-                BooleanExpression = new EX_CallMath { StackNode = notPreBool, Parameters = [new EX_LocalFinalFunction { StackNode = isInBattle, Parameters = [] }] }
-            },
-            new EX_JumpIfNot { BooleanExpression = new EX_CallMath { StackNode = isValid, Parameters = [CoopController()] } },
-            new EX_Let {
-                Value = roll,
-                Variable = MemberOf(config, roll),
-                Expression = new EX_CallMath { StackNode = randomIntegerInRange, Parameters = [new EX_IntConst { Value = 0 }, new EX_IntConst { Value = 7 }] }
-            }
+        var roll = PropertyPointer(controllerWorld.Name(RollName), expressions.CoopConfigClass);
+        EX_Context Roll() => MemberOf(expressions.CoopConfig(), roll);
+        KismetExpression[] Guarded(KismetExpression condition, KismetExpression assignment) => [
+            new EX_JumpIfNot { BooleanExpression = condition },
+            expressions.SkipIfNoCoopController(),
+            new EX_JumpIfNot { BooleanExpression = expressions.IsValid(expressions.CoopConfig()) },
+            new EX_Let { Value = roll, Variable = Roll(), Expression = assignment }
         ];
-        Splice(controllerWorld, func, 0, 0, rollStatements, skipTarget: true);
+
+        {
+            var func = (FunctionExport)controllerWorld["OnBattleBeginTransitionRequested"];
+            var notInBattle = expressions.SkipIfInBattle().BooleanExpression;
+            var next = Call("SelectInt",
+                Call("Subtract_IntInt", Roll(), Int(KeepRoll)),
+                Call("RandomIntegerInRange", Int(0), Int(KeepRoll - 1)),
+                Call("GreaterEqual_IntInt", Roll(), Int(KeepRoll)));
+            Splice(controllerWorld, func, 0, 0, Guarded(notInBattle, next), skipTarget: true);
+        }
+
+        {
+            var func = (FunctionExport)controllerWorld["ResumeExplorationOnBattleEnd"];
+            var battleEndResult = PropertyPointer(controllerWorld.Name("BattleEndResult"), controllerWorld.ExportIndex("ResumeExplorationOnBattleEnd"));
+            var lost = Call("EqualEqual_ByteByte", new EX_LocalVariable { Variable = battleEndResult }, new EX_ByteConst { Value = BattleLost });
+            var keep = Call("Add_IntInt", Call("Percent_IntInt", Roll(), Int(KeepRoll)), Int(KeepRoll));
+            Splice(controllerWorld, func, 0, 0, Guarded(lost, keep), skipTarget: true);
+        }
+
         controllerWorld.SyncNamesReferencedFromExportDataCount();
     }
 }

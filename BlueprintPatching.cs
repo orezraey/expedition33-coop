@@ -22,13 +22,17 @@ public static class BlueprintPatching {
         cls.LoadedProperties = [..cls.LoadedProperties, variable];
 
         var mappings = asset.Mappings ?? throw new Exception($"{className} requires mappings");
+        var updated = 0;
         foreach (var key in mappings.Schemas.Keys.ToList()) {
             if (mappings.Schemas[key].Name != className)
                 continue;
             var schema = Usmap.GetSchemaFromStructExport(cls, mappings.AreFNamesCaseInsensitive);
             schema.ModulePath = mappings.Schemas[key].ModulePath;
             mappings.Schemas[key] = schema;
+            updated++;
         }
+        if (updated == 0)
+            throw new Exception($"No schema registered for {className}, its CDO would be written with the old property indices");
         asset.SyncNamesReferencedFromExportDataCount();
         return variable;
     }
@@ -41,12 +45,14 @@ public static class BlueprintPatching {
         var start = offsets[index];
         var oldEnd = offsets[index + removeCount];
 
+        // computed jumps (ubergraphs) are entered at offsets stored in other functions and latent actions, which can't be relocated;
         // switch values store absolute offsets inside their own statement, so they must not move
-        foreach (var statement in func.ScriptBytecode[index..]) {
+        for (var i = 0; i < func.ScriptBytecode.Length; i++) {
+            var movesWithSplice = i >= index;
             uint visitOffset = 0;
-            statement.Visit(asset, ref visitOffset, (expression, _) => {
-                if (expression is EX_SwitchValue or EX_ComputedJump)
-                    throw new Exception($"{func.ObjectName}: {expression.GetType().Name} after the splice point is not supported");
+            func.ScriptBytecode[i].Visit(asset, ref visitOffset, (expression, _) => {
+                if (expression is EX_ComputedJump || (expression is EX_SwitchValue && movesWithSplice))
+                    throw new Exception($"{func.ObjectName}: {expression.GetType().Name} is not supported when splicing at statement {index}");
             });
         }
 

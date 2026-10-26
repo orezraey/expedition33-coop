@@ -1,5 +1,6 @@
 <#
-Applies the patches from ControlRestorePatch.cs to an already installed (released) build of the mod.
+Applies the patches from ApplyCoopPatches in Program.cs (ControlRestorePatch.cs, RandomAssignmentPatch.cs) to an already installed
+(released) build of the mod.
 
 Requires retoc.exe (https://github.com/trumank/retoc) and the .NET SDK.
 The patched container is written to -OutputDir; copy it into Paks\~mods yourself after backing up the original files.
@@ -23,7 +24,7 @@ if (-not (Test-Path (Join-Path $mods 'expedition33_coop_P.utoc'))) { throw "The 
 
 # the game mounts every container below Paks, so never write the output (or a backup) there
 $OutputDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDir)
-if ($OutputDir.TrimEnd('\').StartsWith($paks, [StringComparison]::OrdinalIgnoreCase)) {
+if (($OutputDir.TrimEnd('\') + '\').StartsWith($paks + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw "OutputDir must not be inside $paks; copy the files into ~mods after backing up the originals"
 }
 
