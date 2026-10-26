@@ -11,6 +11,13 @@ using UAssetAPI.UnrealTypes;
 using UAssetAPI.Unversioned;
 
 var usmap = new Usmap("Mappings.usmap");
+
+// patch an already built mod in place (assets extracted with `retoc to-legacy`): dotnet run -- patch-legacy <path to Sandfall\Content>
+if (args is ["patch-legacy", var legacyContent]) {
+    ApplyControlRestorePatch(legacyContent);
+    return;
+}
+
 // patch broken struct references in ModLibrary
 {
     var modLibrary = new UAsset(@".\Sandfall\Windows\Sandfall\Content\Coop\ModLibrary.uasset", EngineVersion.VER_UE5_4, usmap);
@@ -88,6 +95,8 @@ var usmap = new Usmap("Mappings.usmap");
             throw new Exception($"ue-hook-blueprints.exe failed with {proc.ExitCode}");
     }
 
+    ApplyControlRestorePatch(@".\Sandfall\Windows\Sandfall\Content");
+
     var retocProc = Process.Start("retoc.exe",
     [
         "to-zen", @".\Sandfall\Windows", "expedition33_coop_P.utoc",
@@ -133,4 +142,17 @@ var usmap = new Usmap("Mappings.usmap");
     retocProc.WaitForExit();
     if (retocProc.ExitCode != 0)
         throw new Exception($"retoc.exe failed with {retocProc.ExitCode}");
+}
+
+void ApplyControlRestorePatch(string content) {
+    var coopControllerPath = Path.Join(content, "Coop/CoopController.uasset");
+    var coopController = new UAsset(coopControllerPath, EngineVersion.VER_UE5_4, usmap);
+    ControlRestorePatch.PatchCoopController(coopController);
+    coopController.Write(coopControllerPath);
+
+    var controllerWorldPath = Path.Join(content, "jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.uasset");
+    var controllerWorld = new UAsset(controllerWorldPath, EngineVersion.VER_UE5_4, usmap);
+    ControlRestorePatch.PatchControllerWorld(controllerWorld);
+    controllerWorld.Write(controllerWorldPath);
+    Console.WriteLine("Patched control restore after battle");
 }
