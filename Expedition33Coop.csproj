@@ -10,7 +10,9 @@
 
     <ItemGroup>
         <Compile Include="Program.cs" />
+        <Compile Include="BlueprintPatching.cs" />
         <Compile Include="ControlRestorePatch.cs" />
+        <Compile Include="RandomAssignmentPatch.cs" />
     </ItemGroup>
 
     <ItemGroup>

@@ -14,7 +14,7 @@ var usmap = new Usmap("Mappings.usmap");
 
 // patch an already built mod in place (assets extracted with `retoc to-legacy`): dotnet run -- patch-legacy <path to Sandfall\Content>
 if (args is ["patch-legacy", var legacyContent]) {
-    ApplyControlRestorePatch(legacyContent);
+    ApplyCoopPatches(legacyContent);
     return;
 }
 
@@ -94,7 +94,7 @@ if (args is ["patch-legacy", var legacyContent]) {
             throw new Exception($"ue-hook-blueprints.exe failed with {proc.ExitCode}");
     }
 
-    ApplyControlRestorePatch(@".\Sandfall\Windows\Sandfall\Content");
+    ApplyCoopPatches(@".\Sandfall\Windows\Sandfall\Content");
 
     var retocProc = Process.Start("retoc.exe",
     [
@@ -143,20 +143,19 @@ if (args is ["patch-legacy", var legacyContent]) {
         throw new Exception($"retoc.exe failed with {retocProc.ExitCode}");
 }
 
-void ApplyControlRestorePatch(string content) {
-    var coopControllerPath = Path.Join(content, "Coop/CoopController.uasset");
-    var coopController = new UAsset(coopControllerPath, EngineVersion.VER_UE5_4, usmap);
-    ControlRestorePatch.PatchCoopController(coopController);
-    coopController.Write(coopControllerPath);
+void ApplyCoopPatches(string content) {
+    void Patch(string asset, params Action<UAsset>[] patches) {
+        var path = Path.Join(content, asset + ".uasset");
+        var uasset = new UAsset(path, EngineVersion.VER_UE5_4, usmap);
+        foreach (var patch in patches)
+            patch(uasset);
+        uasset.Write(path);
+    }
 
-    var controllerWorldPath = Path.Join(content, "jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.uasset");
-    var controllerWorld = new UAsset(controllerWorldPath, EngineVersion.VER_UE5_4, usmap);
-    ControlRestorePatch.PatchControllerWorld(controllerWorld);
-    controllerWorld.Write(controllerWorldPath);
-
-    var characterBattleBasePath = Path.Join(content, "jRPGTemplate/Blueprints/Basics/BP_jRPG_Character_Battle_Base.uasset");
-    var characterBattleBase = new UAsset(characterBattleBasePath, EngineVersion.VER_UE5_4, usmap);
-    ControlRestorePatch.PatchCharacterBattleBase(characterBattleBase);
-    characterBattleBase.Write(characterBattleBasePath);
-    Console.WriteLine("Patched control restore after battle");
+    Patch("Coop/CoopController", ControlRestorePatch.PatchCoopController);
+    Patch("Coop/CoopConfig", RandomAssignmentPatch.PatchCoopConfig);
+    Patch("Coop/ModLibrary", RandomAssignmentPatch.PatchModLibrary);
+    Patch("jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World", ControlRestorePatch.PatchControllerWorld, RandomAssignmentPatch.PatchControllerWorld);
+    Patch("jRPGTemplate/Blueprints/Basics/BP_jRPG_Character_Battle_Base", ControlRestorePatch.PatchCharacterBattleBase);
+    Console.WriteLine("Patched control restore after battle and random character assignment");
 }
