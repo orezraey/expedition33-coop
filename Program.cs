@@ -63,8 +63,7 @@ if (args is ["patch-legacy", var legacyContent]) {
     var endOfScript = new EX_EndOfScript();
     setterFunc.ScriptBytecode = [setterExpression, @return, endOfScript];
 
-    typeof(UAsset).GetField("NamesReferencedFromExportDataCount", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(modActor,
-        modActor.GetNameMapIndexList().Count);
+    modActor.SyncNamesReferencedFromExportDataCount();
 
     modActor.Write(@".\Sandfall\Windows\Sandfall\Content/Coop/ModActor.uasset");
     Console.WriteLine("Patched ModActor");
@@ -154,5 +153,10 @@ void ApplyControlRestorePatch(string content) {
     var controllerWorld = new UAsset(controllerWorldPath, EngineVersion.VER_UE5_4, usmap);
     ControlRestorePatch.PatchControllerWorld(controllerWorld);
     controllerWorld.Write(controllerWorldPath);
+
+    var characterBattleBasePath = Path.Join(content, "jRPGTemplate/Blueprints/Basics/BP_jRPG_Character_Battle_Base.uasset");
+    var characterBattleBase = new UAsset(characterBattleBasePath, EngineVersion.VER_UE5_4, usmap);
+    ControlRestorePatch.PatchCharacterBattleBase(characterBattleBase);
+    characterBattleBase.Write(characterBattleBasePath);
     Console.WriteLine("Patched control restore after battle");
 }

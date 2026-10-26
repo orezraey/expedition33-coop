@@ -15,19 +15,34 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repo = Split-Path $PSScriptRoot -Parent
+$GameDir = (Resolve-Path $GameDir).Path
 $paks = Join-Path $GameDir 'Sandfall\Content\Paks'
 $mods = Join-Path $paks '~mods'
 $Retoc = (Resolve-Path $Retoc).Path
+if (-not (Test-Path (Join-Path $mods 'expedition33_coop_P.utoc'))) { throw "The coop mod is not installed in $mods" }
+
+# the game mounts every container below Paks, so never write the output (or a backup) there
+$OutputDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDir)
+if ($OutputDir.TrimEnd('\').StartsWith($paks, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "OutputDir must not be inside $paks; copy the files into ~mods after backing up the originals"
+}
 
 # the mod's hooked game blueprints can only be converted when the game's containers are next to it,
-# so build a container directory out of hard links (same drive as the game, no copies)
-$work = Join-Path (Split-Path $GameDir -Qualifier) "\tmp\expedition33-coop-patch-$PID"
+# so build a container directory out of hard links (same volume as the game) and fall back to copies
+$work = Join-Path ([IO.Path]::GetPathRoot($GameDir)) "expedition33-coop-patch-$PID"
 $containers = Join-Path $work 'paks'
 $legacy = Join-Path $work 'legacy'
 New-Item -ItemType Directory -Force $containers | Out-Null
 try {
-    Get-ChildItem $paks -File | ForEach-Object { New-Item -ItemType HardLink -Path (Join-Path $containers $_.Name) -Target $_.FullName | Out-Null }
-    Get-ChildItem $mods -File -Filter 'expedition33_coop_P.*' | ForEach-Object { New-Item -ItemType HardLink -Path (Join-Path $containers $_.Name) -Target $_.FullName | Out-Null }
+    $files = @(Get-ChildItem $paks -File) + @(Get-ChildItem $mods -File -Filter 'expedition33_coop_P.*')
+    foreach ($file in $files) {
+        $link = Join-Path $containers $file.Name
+        try {
+            New-Item -ItemType HardLink -Path $link -Target $file.FullName -ErrorAction Stop | Out-Null
+        } catch {
+            Copy-Item $file.FullName $link
+        }
+    }
 
     $assets = @(
         'Coop/CoopConfig', 'Coop/CoopController', 'Coop/ModActor', 'Coop/ModDebugWidget', 'Coop/ModLibrary', 'Coop/PlayerIndicator', 'Coop/UserSwitchWidget',
