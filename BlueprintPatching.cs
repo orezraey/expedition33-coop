@@ -93,6 +93,14 @@ public static class BlueprintPatching {
         return offsets;
     }
 
+    // obj->function(...) for a function without return value, where call is the EX_FinalFunction/EX_VirtualFunction
+    public static EX_Context CallOn(UAsset asset, KismetExpression obj, KismetExpression call) => new() {
+        ObjectExpression = obj,
+        Offset = (uint)ExpressionSize(asset, call),
+        RValuePointer = new KismetPropertyPointer { New = new FFieldPath { Path = [], ResolvedOwner = FPackageIndex.FromRawIndex(0) } },
+        ContextExpression = call
+    };
+
     static int ExpressionSize(UAsset asset, KismetExpression expression) {
         using var stream = new MemoryStream();
         using var writer = new AssetBinaryWriter(stream, asset);

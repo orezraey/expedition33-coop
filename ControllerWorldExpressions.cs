@@ -36,10 +36,13 @@ public sealed class ControllerWorldExpressions {
 
     public EX_CallMath IsValid(KismetExpression obj) => new() { StackNode = isValid, Parameters = [obj] };
 
+    public EX_LocalFinalFunction IsInBattle() => new() { StackNode = isInBattle, Parameters = [] };
+
     // jump unless no battle is running yet (BattleFlowState == 0)
-    public EX_JumpIfNot SkipIfInBattle() => new() {
-        BooleanExpression = new EX_CallMath { StackNode = notPreBool, Parameters = [new EX_LocalFinalFunction { StackNode = isInBattle, Parameters = [] }] }
-    };
+    public EX_JumpIfNot SkipIfInBattle() => new() { BooleanExpression = new EX_CallMath { StackNode = notPreBool, Parameters = [IsInBattle()] } };
+
+    // jump unless a battle is running
+    public EX_JumpIfNot SkipIfNotInBattle() => new() { BooleanExpression = IsInBattle() };
 
     // jump unless the CoopController exists, so contexts on it never access None
     public EX_JumpIfNot SkipIfNoCoopController() => new() { BooleanExpression = IsValid(CoopController()) };

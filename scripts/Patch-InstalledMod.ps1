@@ -1,17 +1,21 @@
 <#
-Applies the patches from ApplyCoopPatches in Program.cs (ControlRestorePatch.cs, RandomAssignmentPatch.cs) to an already installed
-(released) build of the mod.
+Applies the patches from ApplyCoopPatches in Program.cs (ControlRestorePatch.cs, RandomAssignmentPatch.cs, GamepadUiPatch.cs) to an
+already installed (released) build of the mod.
 
 Requires retoc.exe (https://github.com/trumank/retoc) and the .NET SDK.
 The patched container is written to -OutputDir; copy it into Paks\~mods yourself after backing up the original files.
 
 Example:
   .\scripts\Patch-InstalledMod.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Expedition 33" -Retoc .\retoc.exe -OutputDir .\patched
+
+-ModSource is the folder with the unpatched expedition33_coop_P.* files (default: the game's Paks\~mods). Point it at a backup of the
+original files when the installed mod is already patched.
 #>
 param(
     [Parameter(Mandatory)] [string] $GameDir,
     [Parameter(Mandatory)] [string] $Retoc,
-    [Parameter(Mandatory)] [string] $OutputDir
+    [Parameter(Mandatory)] [string] $OutputDir,
+    [string] $ModSource
 )
 $ErrorActionPreference = 'Stop'
 
@@ -20,7 +24,9 @@ $GameDir = (Resolve-Path $GameDir).Path
 $paks = Join-Path $GameDir 'Sandfall\Content\Paks'
 $mods = Join-Path $paks '~mods'
 $Retoc = (Resolve-Path $Retoc).Path
-if (-not (Test-Path (Join-Path $mods 'expedition33_coop_P.utoc'))) { throw "The coop mod is not installed in $mods" }
+if (-not $ModSource) { $ModSource = $mods }
+$ModSource = (Resolve-Path $ModSource).Path
+if (-not (Test-Path (Join-Path $ModSource 'expedition33_coop_P.utoc'))) { throw "The coop mod is not in $ModSource" }
 
 # the game mounts every container below Paks, so never write the output (or a backup) there
 $OutputDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDir)
@@ -35,7 +41,7 @@ $containers = Join-Path $work 'paks'
 $legacy = Join-Path $work 'legacy'
 New-Item -ItemType Directory -Force $containers | Out-Null
 try {
-    $files = @(Get-ChildItem $paks -File) + @(Get-ChildItem $mods -File -Filter 'expedition33_coop_P.*')
+    $files = @(Get-ChildItem $paks -File) + @(Get-ChildItem $ModSource -File -Filter 'expedition33_coop_P.*')
     foreach ($file in $files) {
         $link = Join-Path $containers $file.Name
         try {

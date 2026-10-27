@@ -55,7 +55,60 @@ public static class ControlRestorePatch {
             Splice(controllerWorld, func, resetIndex + 1, 0, restore, skipTarget: true);
         }
 
+        // PrepareToChangeMap removes the CoopControllers and hands player controller 0 back to the primary user. Remember the exploration user
+        // on the CoopController CDO, which outlives the map: the CoopControllers of the next map start with it, and ModActor::SetupCoopController
+        // gives it back control. During a battle (game over reload) controller 0 belongs to the acting player, so keep the stored user instead.
+        //   if (IsInBattle() && IsValid(CoopController)) Default__CoopController_C->CoopExplorationUserId = CoopController->CoopExplorationUserId
+        //   if (!IsInBattle()) Default__CoopController_C->CoopExplorationUserId = self->GetPlatformUserId()
+        {
+            var func = (FunctionExport)controllerWorld["PrepareToChangeMap"];
+            var coopControllerPackage = controllerWorld.FindOrAddImport("/Script/CoreUObject", "Package", FPackageIndex.FromRawIndex(0), "/Game/Coop/CoopController");
+            var coopControllerDefaults = controllerWorld.FindOrAddImport("/Game/Coop/CoopController", "CoopController_C", coopControllerPackage, "Default__CoopController_C");
+            EX_Context DefaultVariable() => MemberOf(new EX_ObjectConst { Value = coopControllerDefaults }, variable);
+            KismetExpression[] fromExploration = [
+                expressions.SkipIfInBattle(),
+                new EX_Let { Value = variable, Variable = DefaultVariable(), Expression = new EX_FinalFunction { StackNode = getPlatformUserId, Parameters = [] } }
+            ];
+            KismetExpression[] fromBattle = [
+                expressions.SkipIfNotInBattle(),
+                expressions.SkipIfNoCoopController(),
+                new EX_Let { Value = variable, Variable = DefaultVariable(), Expression = CoopVariable() }
+            ];
+            Splice(controllerWorld, func, 0, 0, fromExploration, skipTarget: true);
+            Splice(controllerWorld, func, 0, 0, fromBattle, skipTarget: true);
+        }
+
         controllerWorld.SyncNamesReferencedFromExportDataCount();
+    }
+
+    // ModActor::SetupCoopController creates a CoopController, which starts with the exploration user stored on the CDO before the map change
+    //   if (cast succeeded) SetPlayerPlatformUserId(GetPlayerController(self, 0), CoopController->CoopExplorationUserId)
+    // It runs once per CoopController; SetPlayerPlatformUserId swaps users between local players, so repeating it is harmless.
+    public static void PatchModActor(UAsset modActor) {
+        var gameplayStatics = modActor.FindImport("GameplayStatics", "Class");
+        var getPlayerController = modActor.FindOrAddFunctionImport(gameplayStatics, "GetPlayerController");
+        var setPlayerPlatformUserId = modActor.FindOrAddFunctionImport(gameplayStatics, "SetPlayerPlatformUserId");
+        var coopControllerClass = modActor.FindImport("CoopController_C", "BlueprintGeneratedClass");
+        var func = (FunctionExport)modActor["SetupCoopController"];
+        var funcIndex = modActor.ExportIndex("SetupCoopController");
+        var castResult = PropertyPointer(modActor.Name("K2Node_DynamicCast_AsCoop_Controller"), funcIndex);
+        var castSucceeded = PropertyPointer(modActor.Name("K2Node_DynamicCast_bSuccess"), funcIndex);
+        if (func.LoadedProperties.All(p => p.Name.ToString() != "K2Node_DynamicCast_AsCoop_Controller"))
+            throw new Exception("SetupCoopController: cast result not found");
+
+        var returnIndex = Array.FindIndex(func.ScriptBytecode, e => e is EX_Return);
+        KismetExpression[] restore = [
+            new EX_JumpIfNot { BooleanExpression = new EX_LocalVariable { Variable = castSucceeded } },
+            new EX_CallMath {
+                StackNode = setPlayerPlatformUserId,
+                Parameters = [
+                    new EX_CallMath { StackNode = getPlayerController, Parameters = [new EX_Self(), new EX_IntConst { Value = 0 }] },
+                    MemberOf(new EX_LocalVariable { Variable = castResult }, PropertyPointer(modActor.Name(VariableName), coopControllerClass))
+                ]
+            }
+        ];
+        Splice(modActor, func, returnIndex, 0, restore, skipTarget: true);
+        modActor.SyncNamesReferencedFromExportDataCount();
     }
 
     // OnTurnEnded hands player controller 0 back to the primary user after every turn; outside of a battle that would undo
