@@ -26,9 +26,16 @@ public static class ControlRestorePatch {
 
         // OnBattleBeginTransitionRequested sets BattleFlowState to 1 (in battle) and runs before the battle's first turn changes the user of
         // player controller 0. Only store the user when no battle is running yet, so chained battles keep the user from before the first one.
-        //   if (!IsInBattle() && IsValid(CoopController)) CoopController->CoopExplorationUserId = self->GetPlatformUserId()
+        // Then hand controller 0 to the primary user: the defense hooks only forward its input for player 1's characters, and if enemies act
+        // first no player turn has reset it yet. BattleEndState still holds the previous battle's result until the battle intro is over;
+        // reset it now so the victory hand over below doesn't fire while this battle starts.
+        //   if (!IsInBattle() && IsValid(CoopController))
+        //     CoopController->CoopExplorationUserId = self->GetPlatformUserId()
+        //     BattleManager->BattleEndState = 0
+        //     SetPlayerPlatformUserId(self, GetPrimaryPlatformUser())
         {
             var func = (FunctionExport)controllerWorld["OnBattleBeginTransitionRequested"];
+            var getPrimaryPlatformUser = controllerWorld.FindImport("GetPrimaryPlatformUser", outer: controllerWorld.FindImport("InputDeviceLibrary", "Class"));
             KismetExpression[] store = [
                 expressions.SkipIfInBattle(),
                 expressions.SkipIfNoCoopController(),
@@ -36,6 +43,15 @@ public static class ControlRestorePatch {
                     Value = variable,
                     Variable = CoopVariable(),
                     Expression = new EX_FinalFunction { StackNode = getPlatformUserId, Parameters = [] }
+                },
+                new EX_Let {
+                    Value = expressions.BattleEndStatePointer(),
+                    Variable = expressions.BattleEndState(),
+                    Expression = new EX_ByteConst { Value = 0 }
+                },
+                new EX_CallMath {
+                    StackNode = setPlayerPlatformUserId,
+                    Parameters = [new EX_Self(), new EX_CallMath { StackNode = getPrimaryPlatformUser, Parameters = [] }]
                 }
             ];
             Splice(controllerWorld, func, 0, 0, store, skipTarget: true);
@@ -81,7 +97,8 @@ public static class ControlRestorePatch {
 
         // Victory and flee screens are shown while the battle is still running, after the last turn end handed player controller 0 to the
         // primary user, so player 1 had to confirm them. Every tick while the battle ends in victory or flee, hand it to the exploration user:
-        //   if (IsInBattle() && (BattleManager->BattleEndState == Victory || == Flee) && IsValid(CoopController))
+        //   if (IsInBattle() && (BattleManager->BattleEndState == Victory || == Flee) && IsValid(CoopController)
+        //       && self->GetPlatformUserId() != CoopController->CoopExplorationUserId)
         //     SetPlayerPlatformUserId(self, CoopController->CoopExplorationUserId)
         // A lost battle keeps player 1 on the game over screen: sending the reserve team continues the battle, and enemy turns need player
         // controller 0 on the primary user for the defense inputs.
@@ -90,18 +107,20 @@ public static class ControlRestorePatch {
             var kismetMathLibrary = controllerWorld.FindImport("KismetMathLibrary", "Class");
             var equalEqualByteByte = controllerWorld.FindOrAddFunctionImport(kismetMathLibrary, "EqualEqual_ByteByte");
             var booleanOr = controllerWorld.FindOrAddFunctionImport(kismetMathLibrary, "BooleanOR");
-            var battleManager = new EX_InstanceVariable {
-                Variable = PropertyPointer(controllerWorld.Name("AC_jRPG_BattleManager"), controllerWorld.ExportIndex("BP_jRPG_Controller_World_C"))
-            };
-            var battleEndState = PropertyPointer(controllerWorld.Name("BattleEndState"),
-                controllerWorld.FindImport("AC_jRPG_BattleManager_C", "BlueprintGeneratedClass"));
+            var notEqualPlatformUserId = controllerWorld.FindOrAddFunctionImport(controllerWorld.FindImport("InputDeviceLibrary", "Class"), "NotEqual_PlatformUserId");
             EX_CallMath BattleEndedAs(byte result) => new() {
-                StackNode = equalEqualByteByte, Parameters = [MemberOf(battleManager, battleEndState), new EX_ByteConst { Value = result }]
+                StackNode = equalEqualByteByte, Parameters = [expressions.BattleEndState(), new EX_ByteConst { Value = result }]
             };
             KismetExpression[] handOver = [
                 expressions.SkipIfNotInBattle(),
                 new EX_JumpIfNot { BooleanExpression = new EX_CallMath { StackNode = booleanOr, Parameters = [BattleEndedAs(BattleWon), BattleEndedAs(BattleFled)] } },
                 expressions.SkipIfNoCoopController(),
+                new EX_JumpIfNot {
+                    BooleanExpression = new EX_CallMath {
+                        StackNode = notEqualPlatformUserId,
+                        Parameters = [new EX_FinalFunction { StackNode = getPlatformUserId, Parameters = [] }, CoopVariable()]
+                    }
+                },
                 new EX_CallMath { StackNode = setPlayerPlatformUserId, Parameters = [new EX_Self(), CoopVariable()] }
             ];
             Splice(controllerWorld, func, 0, 0, handOver, skipTarget: true);

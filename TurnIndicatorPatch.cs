@@ -9,7 +9,7 @@ using static BlueprintPatching;
 // At the start of a player character's turn the mod only shows "Player {i}'s Turn" as a battle tooltip, which is easy to miss (with a random
 // assignment players only noticed who controls a character when acting). Also show it with the mod's own UserSwitchWidget toast, the one
 // shown when a player takes control with START. In BP_jRPG_Character_Battle_Base::OnTurnStart, right after controller 0 goes to the player:
-//   Coop_TurnIndicator = SpawnObject(UserSwitchWidget_C, self)
+//   Coop_TurnIndicator = SpawnObject(UserSwitchWidget_C, GetPlayerController(self, 0))
 //   SetTextPropertyByName(Coop_TurnIndicator, 'Text', "Player {i}'s Turn")
 //   Coop_TurnIndicator->AddToViewport(9999)
 public static class TurnIndicatorPatch {
@@ -17,6 +17,7 @@ public static class TurnIndicatorPatch {
         var gameplayStatics = characterBattleBase.FindImport("GameplayStatics", "Class");
         var setPlayerPlatformUserId = characterBattleBase.FindImport("SetPlayerPlatformUserId", outer: gameplayStatics);
         var spawnObject = characterBattleBase.FindOrAddFunctionImport(gameplayStatics, "SpawnObject");
+        var getPlayerController = characterBattleBase.FindImport("GetPlayerController", outer: gameplayStatics);
         var setTextPropertyByName = characterBattleBase.FindOrAddFunctionImport(characterBattleBase.FindImport("KismetSystemLibrary", "Class"), "SetTextPropertyByName");
         var userWidget = characterBattleBase.FindImport("UserWidget", "Class");
         var addToViewport = characterBattleBase.FindOrAddFunctionImport(userWidget, "AddToViewport");
@@ -43,7 +44,14 @@ public static class TurnIndicatorPatch {
         KismetExpression[] toast = [
             new EX_LetObj {
                 VariableExpression = Local("Coop_TurnIndicator"),
-                AssignmentExpression = new EX_CallMath { StackNode = spawnObject, Parameters = [new EX_ObjectConst { Value = userSwitchWidget }, new EX_Self()] }
+                // outer is player controller 0 (like the mod's own toast), it outlives the battle characters
+                AssignmentExpression = new EX_CallMath {
+                    StackNode = spawnObject,
+                    Parameters = [
+                        new EX_ObjectConst { Value = userSwitchWidget },
+                        new EX_CallMath { StackNode = getPlayerController, Parameters = [new EX_Self(), new EX_IntConst { Value = 0 }] }
+                    ]
+                }
             },
             new EX_CallMath {
                 StackNode = setTextPropertyByName,

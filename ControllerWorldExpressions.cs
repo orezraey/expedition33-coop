@@ -36,6 +36,14 @@ public sealed class ControllerWorldExpressions {
 
     public EX_CallMath IsValid(KismetExpression obj) => new() { StackNode = isValid, Parameters = [obj] };
 
+    // this.AC_jRPG_BattleManager->BattleEndState (EBattleEndResult; StartBattle only resets it after the battle intro)
+    public EX_Context BattleEndState() => MemberOf(
+        new EX_InstanceVariable { Variable = PropertyPointer(asset.Name("AC_jRPG_BattleManager"), asset.ExportIndex("BP_jRPG_Controller_World_C")) },
+        BattleEndStatePointer());
+
+    public KismetPropertyPointer BattleEndStatePointer() =>
+        PropertyPointer(asset.Name("BattleEndState"), asset.FindImport("AC_jRPG_BattleManager_C", "BlueprintGeneratedClass"));
+
     public EX_LocalFinalFunction IsInBattle() => new() { StackNode = isInBattle, Parameters = [] };
 
     // jump unless no battle is running yet (BattleFlowState == 0)
