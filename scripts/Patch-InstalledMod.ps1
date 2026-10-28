@@ -73,7 +73,9 @@ try {
     Push-Location $repo
     try {
         dotnet run --project Expedition33Coop.csproj -c Release -- patch-legacy (Join-Path $legacy 'Sandfall\Content')
-        if ($LASTEXITCODE -ne 0) { throw "patch-legacy failed with $LASTEXITCODE" }
+        if ($LASTEXITCODE -ne 0) {
+            throw "patch-legacy failed with $LASTEXITCODE; if the error says a variable already exists, $ModSource is already patched: pass -ModSource with a backup of the original files"
+        }
     } finally { Pop-Location }
 
     New-Item -ItemType Directory -Force $OutputDir | Out-Null

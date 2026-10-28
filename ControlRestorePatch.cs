@@ -6,8 +6,9 @@ using UAssetAPI.Kismet.Bytecode.Expressions;
 using UAssetAPI.UnrealTypes;
 using static BlueprintPatching;
 
-// After a battle the exploration controller (player controller 0) used to be handed back to the primary user (player 1).
-// These patches remember which user controlled the exploration character when the battle started and give control back to that user afterwards.
+// After a battle and on every map change the exploration controller (player controller 0) used to be handed back to the primary user
+// (player 1). These patches remember which user controlled the exploration character when the battle started or the map changed, and give
+// control back to that user afterwards.
 public static class ControlRestorePatch {
     const string VariableName = "CoopExplorationUserId";
 
@@ -97,6 +98,8 @@ public static class ControlRestorePatch {
             throw new Exception("SetupCoopController: cast result not found");
 
         var returnIndex = Array.FindIndex(func.ScriptBytecode, e => e is EX_Return);
+        if (returnIndex < 0)
+            throw new Exception("SetupCoopController: return statement not found");
         KismetExpression[] restore = [
             new EX_JumpIfNot { BooleanExpression = new EX_LocalVariable { Variable = castSucceeded } },
             new EX_CallMath {

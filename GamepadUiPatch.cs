@@ -19,17 +19,11 @@ public static class GamepadUiPatch {
 
         var subsystem = new EX_CallMath { StackNode = getSubsystem, Parameters = [new EX_Self(), new EX_ObjectConst { Value = commonInputSubsystem }] };
         var call = new EX_FinalFunction { StackNode = setCurrentInputType, Parameters = [new EX_ByteConst { Value = Gamepad }] };
-        var setGamepad = CallOn(controllerWorld, subsystem, call);
         // a missing subsystem must not log "Accessed None" every tick
-        KismetExpression failSilent = new EX_Context_FailSilent {
-            ObjectExpression = setGamepad.ObjectExpression,
-            Offset = setGamepad.Offset,
-            RValuePointer = setGamepad.RValuePointer,
-            ContextExpression = setGamepad.ContextExpression
-        };
+        KismetExpression setGamepad = CallOn(controllerWorld, subsystem, call, failSilent: true);
 
         var func = (FunctionExport)controllerWorld["ReceiveTick"];
-        Splice(controllerWorld, func, 0, 0, [failSilent]);
+        Splice(controllerWorld, func, 0, 0, [setGamepad]);
         controllerWorld.SyncNamesReferencedFromExportDataCount();
     }
 }
