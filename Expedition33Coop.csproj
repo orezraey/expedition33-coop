@@ -15,6 +15,7 @@
         <Compile Include="ControlRestorePatch.cs" />
         <Compile Include="GamepadUiPatch.cs" />
         <Compile Include="RandomAssignmentPatch.cs" />
+        <Compile Include="TurnIndicatorPatch.cs" />
     </ItemGroup>
 
     <ItemGroup>

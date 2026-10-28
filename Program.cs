@@ -158,6 +158,6 @@ void ApplyCoopPatches(string content) {
     Patch("Coop/ModActor", ControlRestorePatch.PatchModActor);
     Patch("jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World",
         ControlRestorePatch.PatchControllerWorld, RandomAssignmentPatch.PatchControllerWorld, GamepadUiPatch.PatchControllerWorld);
-    Patch("jRPGTemplate/Blueprints/Basics/BP_jRPG_Character_Battle_Base", ControlRestorePatch.PatchCharacterBattleBase);
-    Console.WriteLine("Patched control restore, random character assignment and gamepad UI");
+    Patch("jRPGTemplate/Blueprints/Basics/BP_jRPG_Character_Battle_Base", ControlRestorePatch.PatchCharacterBattleBase, TurnIndicatorPatch.PatchCharacterBattleBase);
+    Console.WriteLine("Patched control restore, random character assignment, gamepad UI and turn indicator");
 }

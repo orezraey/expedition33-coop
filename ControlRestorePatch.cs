@@ -79,8 +79,39 @@ public static class ControlRestorePatch {
             Splice(controllerWorld, func, 0, 0, fromBattle, skipTarget: true);
         }
 
+        // Victory and flee screens are shown while the battle is still running, after the last turn end handed player controller 0 to the
+        // primary user, so player 1 had to confirm them. Every tick while the battle ends in victory or flee, hand it to the exploration user:
+        //   if (IsInBattle() && (BattleManager->BattleEndState == Victory || == Flee) && IsValid(CoopController))
+        //     SetPlayerPlatformUserId(self, CoopController->CoopExplorationUserId)
+        // A lost battle keeps player 1 on the game over screen: sending the reserve team continues the battle, and enemy turns need player
+        // controller 0 on the primary user for the defense inputs.
+        {
+            var func = (FunctionExport)controllerWorld["ReceiveTick"];
+            var kismetMathLibrary = controllerWorld.FindImport("KismetMathLibrary", "Class");
+            var equalEqualByteByte = controllerWorld.FindOrAddFunctionImport(kismetMathLibrary, "EqualEqual_ByteByte");
+            var booleanOr = controllerWorld.FindOrAddFunctionImport(kismetMathLibrary, "BooleanOR");
+            var battleManager = new EX_InstanceVariable {
+                Variable = PropertyPointer(controllerWorld.Name("AC_jRPG_BattleManager"), controllerWorld.ExportIndex("BP_jRPG_Controller_World_C"))
+            };
+            var battleEndState = PropertyPointer(controllerWorld.Name("BattleEndState"),
+                controllerWorld.FindImport("AC_jRPG_BattleManager_C", "BlueprintGeneratedClass"));
+            EX_CallMath BattleEndedAs(byte result) => new() {
+                StackNode = equalEqualByteByte, Parameters = [MemberOf(battleManager, battleEndState), new EX_ByteConst { Value = result }]
+            };
+            KismetExpression[] handOver = [
+                expressions.SkipIfNotInBattle(),
+                new EX_JumpIfNot { BooleanExpression = new EX_CallMath { StackNode = booleanOr, Parameters = [BattleEndedAs(BattleWon), BattleEndedAs(BattleFled)] } },
+                expressions.SkipIfNoCoopController(),
+                new EX_CallMath { StackNode = setPlayerPlatformUserId, Parameters = [new EX_Self(), CoopVariable()] }
+            ];
+            Splice(controllerWorld, func, 0, 0, handOver, skipTarget: true);
+        }
+
         controllerWorld.SyncNamesReferencedFromExportDataCount();
     }
+
+    // EBattleEndResult values set by AC_jRPG_BattleManager::StartBattleEndFlow
+    const byte BattleWon = 1, BattleFled = 3;
 
     // ModActor::SetupCoopController creates a CoopController, which starts with the exploration user stored on the CDO before the map change
     //   if (cast succeeded) SetPlayerPlatformUserId(GetPlayerController(self, 0), CoopController->CoopExplorationUserId)
