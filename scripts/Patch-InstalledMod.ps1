@@ -1,5 +1,5 @@
 <#
-Applies the patches from ApplyCoopPatches in Program.cs (ControlRestorePatch.cs, RandomAssignmentPatch.cs, GamepadUiPatch.cs) to an
+Applies the patches from ApplyCoopPatches in Program.cs (the *Patch.cs files) to an
 already installed (released) build of the mod.
 
 Requires retoc.exe (https://github.com/trumank/retoc) and the .NET SDK.
