@@ -61,9 +61,42 @@ public static class CharacterAssignmentPatch {
             if (index < 0)
                 throw new Exception("SetupSettingsMenu: assignment of the loaded config not found");
             b.ApplyRemembered(func, index + 1, () => new EX_LocalVariable { Variable = config }, GetPartyIndex);
+            DescribeRemembering(modLibrary, func);
         }
 
         modLibrary.SyncNamesReferencedFromExportDataCount();
+    }
+
+    const string DescriptionPrefix = "Select which player should control character ";
+    const string RememberedNote = " The choice is remembered for the character in this party position, and follows them when the party order changes.";
+
+    // the option descriptions still read "control character <N>"; say that the choice now sticks to the character
+    static void DescribeRemembering(UAsset modLibrary, FunctionExport setupSettingsMenu) {
+        var described = 0;
+        for (var i = 0; i < setupSettingsMenu.ScriptBytecode.Length; i++) {
+            if (setupSettingsMenu.ScriptBytecode[i] is not EX_LetObj { AssignmentExpression: EX_LocalVirtualFunction { Parameters: [_, _, _, EX_TextConst description, ..] } create } let)
+                continue;
+            var source = description.Value.LocalizedSource as EX_StringConst;
+            if (description.Value.TextLiteralType != EBlueprintTextLiteralType.LocalizedText || source?.Value.StartsWith(DescriptionPrefix) != true)
+                continue;
+            KismetExpression text = new EX_TextConst {
+                Value = new FScriptText {
+                    TextLiteralType = EBlueprintTextLiteralType.InvariantText,
+                    InvariantLiteralString = new EX_StringConst { Value = source.Value + RememberedNote }
+                }
+            };
+            KismetExpression replaced = new EX_LetObj {
+                VariableExpression = let.VariableExpression,
+                AssignmentExpression = new EX_LocalVirtualFunction {
+                    VirtualFunctionName = create.VirtualFunctionName,
+                    Parameters = [..create.Parameters[..3], text, ..create.Parameters[4..]]
+                }
+            };
+            Splice(modLibrary, setupSettingsMenu, i, 1, [replaced]);
+            described++;
+        }
+        if (described != Slots)
+            throw new Exception($"SetupSettingsMenu: expected {Slots} character assignment descriptions, found {described}");
     }
 
     // UpdateChar<N>Assignment(Value): Config->Character<N>Assignment = Value; remember the slots' assignments; SaveGameToSlot(Config)

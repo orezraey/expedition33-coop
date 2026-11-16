@@ -8,6 +8,7 @@ For those who come after, with your friends!
 
 - During battles each player will control their own character, including having to parry and chose actions.
 - During exploration, player 1 will have control by default, but any player can take over by pressing START (useful for leveling and choosing equipment for your own characters)
+- Each character can be assigned to a player in the mod's settings. The choice is remembered for the character itself, so it follows them when the party order changes.
 
 ### Playing with friends remotely
 
