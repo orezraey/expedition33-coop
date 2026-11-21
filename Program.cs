@@ -156,6 +156,7 @@ void ApplyCoopPatches(string content) {
     Patch("Coop/CoopConfig", RandomAssignmentPatch.PatchCoopConfig, CharacterAssignmentPatch.PatchCoopConfig);
     Patch("Coop/ModLibrary", RandomAssignmentPatch.PatchModLibrary, CharacterAssignmentPatch.PatchModLibrary);
     Patch("Coop/ModActor", ControlRestorePatch.PatchModActor);
+    Patch("Coop/PlayerIndicator", CharacterAssignmentPatch.PatchPlayerIndicator);
     Patch("jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World",
         ControlRestorePatch.PatchControllerWorld, RandomAssignmentPatch.PatchControllerWorld);
     Patch("jRPGTemplate/Blueprints/Basics/BP_jRPG_Character_Battle_Base", ControlRestorePatch.PatchCharacterBattleBase, TurnIndicatorPatch.PatchCharacterBattleBase);
