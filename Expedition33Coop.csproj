@@ -14,7 +14,6 @@
         <Compile Include="CharacterAssignmentPatch.cs" />
         <Compile Include="ControllerWorldExpressions.cs" />
         <Compile Include="ControlRestorePatch.cs" />
-        <Compile Include="GamepadUiPatch.cs" />
         <Compile Include="RandomAssignmentPatch.cs" />
         <Compile Include="TurnIndicatorPatch.cs" />
     </ItemGroup>
