@@ -158,8 +158,8 @@ void ApplyCoopPatches(string content) {
     Patch("Coop/ModActor", ControlRestorePatch.PatchModActor);
     Patch("Coop/PlayerIndicator", CharacterAssignmentPatch.PatchPlayerIndicator);
     Patch("jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World",
-        ControlRestorePatch.PatchControllerWorld, RandomAssignmentPatch.PatchControllerWorld);
+        ControlRestorePatch.PatchControllerWorld, RandomAssignmentPatch.PatchControllerWorld, DialogueGamepadPatch.PatchControllerWorld);
     Patch("jRPGTemplate/Blueprints/Basics/BP_jRPG_Character_Battle_Base", ControlRestorePatch.PatchCharacterBattleBase, TurnIndicatorPatch.PatchCharacterBattleBase);
     Patch("UI/Widgets/InGame_Menu/Settings/OptionsList/WBP_Settings_GeneralOptionsList", CharacterAssignmentPatch.PatchSettingsList);
-    Console.WriteLine("Patched control restore, random and per-character assignment and turn indicator");
+    Console.WriteLine("Patched control restore, random and per-character assignment, dialogue gamepad mode and turn indicator");
 }
