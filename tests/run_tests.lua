@@ -158,7 +158,10 @@ local function makeMockUE()
             if pc == pc2 then return sub2 end
             return nil
         end,
-        isGamepadKeyPressed = function()
+        isGamepadKeyPressed = function(_, keyName)
+            if keyName == "Gamepad_FaceButton_Right" then
+                return state.cancelJustPressed == true, state.cancelDown == true
+            end
             return state.confirmJustPressed == true, state.confirmDown == true
         end,
         getActiveDialogueWaitingForConfirm = function()
@@ -169,6 +172,43 @@ local function makeMockUE()
         end,
         advanceDialogueLine = function()
             state.dialogueAdvances = (state.dialogueAdvances or 0) + 1
+            return true
+        end,
+        getActiveFullscreenNotificationConfirm = function(_, trackedNotif)
+            if not state.fsnActive then
+                return nil, nil, false
+            end
+            if state.fsnPromptReady then
+                return trackedNotif or state.fsnWidget, state.fsnPrompt, true
+            end
+            return nil, nil, true
+        end,
+        confirmFullscreenNotification = function()
+            state.fsnConfirms = (state.fsnConfirms or 0) + 1
+            state.fsnActive = false
+            return true
+        end,
+        getActiveModalPopupButton = function(_, trackedModal, action)
+            if not state.modalActive then
+                return nil, nil, false
+            end
+            if action == "confirm" then
+                if state.modalIsHold then
+                    return nil, nil, true
+                end
+                return trackedModal or state.modalWidget, state.modalConfirmBtn, true
+            elseif action == "cancel" and state.modalHasCancel then
+                return trackedModal or state.modalWidget, state.modalCancelBtn, true
+            end
+            return nil, nil, true
+        end,
+        triggerModalPopupButton = function(_, _, action)
+            if action == "confirm" then
+                state.modalConfirms = (state.modalConfirms or 0) + 1
+            elseif action == "cancel" then
+                state.modalCancels = (state.modalCancels or 0) + 1
+            end
+            state.modalActive = false
             return true
         end,
         spawnTurnToast = function(text) state.toasts[#state.toasts + 1] = text; return true end,
@@ -640,6 +680,112 @@ runTest("gamepad: advances P2 dialogue line directly on A press without skipping
     fakeTime = 11.0
     gp.onTick(ue.pc0)
     assertEq(ue.state.dialogueAdvances, 1, "does not fire OnNextClicked while choices are showing")
+end)
+
+runTest("gamepad: confirms P2 fullscreen notifications (RelationshipUp/Generic) over dialogue without skipping animation", function()
+    local ue = makeMockUE()
+    local fakeTime = 20.0
+    local gp = Gamepad.new(ue, function() return fakeTime end)
+    ue.state.pc0User = 1
+    -- Underlying dialogue is still open while RelationshipUp pops up on top of it
+    ue.state.dialogueWaiting = true
+    ue.state.dialogueComp = {}
+    ue.state.confirmWidget = {}
+    ue.state.dialogueHasChoices = false
+    ue.state.dialogueAdvances = 0
+
+    local notif = { GetAddress = function() return 0x4444 end }
+    ue.state.fsnWidget = notif
+    ue.state.fsnPrompt = {}
+    ue.state.fsnActive = true
+    ue.state.fsnPromptReady = false -- intro animation still playing
+    ue.state.fsnConfirms = 0
+
+    -- Holding A as notification activates must not trigger anything
+    ue.state.confirmDown = true
+    ue.state.confirmJustPressed = false
+    gp.onFullscreenNotificationActivated(notif)
+    fakeTime = 20.3
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.fsnConfirms, 0, "held A does not confirm notification")
+
+    -- Pressing A early while intro animation is still playing must neither confirm nor skip underlying dialogue
+    ue.state.confirmDown = false
+    gp.onTick(ue.pc0)
+    ue.state.confirmDown = true
+    ue.state.confirmJustPressed = true
+    fakeTime = 20.4
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.fsnConfirms, 0, "early A press during intro does not confirm notification")
+    assertEq(ue.state.dialogueAdvances, 0, "early A press during intro does not bleed into underlying dialogue")
+
+    -- Prompt is ready; fresh A press confirms notification WITHOUT advancing underlying dialogue
+    ue.state.confirmDown = false
+    gp.onTick(ue.pc0)
+    ue.state.fsnPromptReady = true
+    ue.state.confirmDown = true
+    ue.state.confirmJustPressed = true
+    fakeTime = 20.8
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.fsnConfirms, 1, "fresh A confirms ready fullscreen notification")
+    assertEq(ue.state.dialogueAdvances, 0, "fullscreen notification consumes A before underlying dialogue")
+end)
+
+runTest("gamepad: confirms/cancels P2 non-hold ModalPopup while leaving hold-confirm and P1 untouched", function()
+    local ue = makeMockUE()
+    local fakeTime = 30.0
+    local gp = Gamepad.new(ue, function() return fakeTime end)
+    ue.state.pc0User = 1
+
+    local modal = { GetAddress = function() return 0x5555 end }
+    ue.state.modalWidget = modal
+    ue.state.modalConfirmBtn = {}
+    ue.state.modalCancelBtn = {}
+    ue.state.modalActive = true
+    ue.state.modalIsHold = true
+    ue.state.modalHasCancel = true
+    ue.state.modalConfirms = 0
+    ue.state.modalCancels = 0
+
+    -- Hold-confirm modal must NOT be triggered by a tap of A
+    gp.onModalPopupActivated(modal)
+    ue.state.confirmDown = true
+    ue.state.confirmJustPressed = true
+    fakeTime = 30.5
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.modalConfirms, 0, "hold-confirm modal ignores A tap")
+
+    -- B cancels the modal cleanly
+    ue.state.confirmDown = false
+    ue.state.confirmJustPressed = false
+    ue.state.cancelDown = true
+    ue.state.cancelJustPressed = true
+    fakeTime = 31.0
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.modalCancels, 1, "B cancels active modal popup")
+
+    -- Non-hold modal confirms on fresh A press
+    ue.state.cancelDown = false
+    ue.state.cancelJustPressed = false
+    ue.state.modalActive = true
+    ue.state.modalIsHold = false
+    gp.onModalPopupActivated(modal)
+    ue.state.confirmDown = true
+    ue.state.confirmJustPressed = true
+    fakeTime = 31.5
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.modalConfirms, 1, "fresh A confirms non-hold modal popup")
+
+    -- Player 1 (user 0) is never intercepted
+    ue.state.pc0User = 0
+    ue.state.modalActive = true
+    ue.state.confirmDown = false
+    gp.onTick(ue.pc0)
+    ue.state.confirmDown = true
+    ue.state.confirmJustPressed = true
+    fakeTime = 32.0
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.modalConfirms, 1, "P1 modal input untouched")
 end)
 
 print(string.format("\nResults: %d passed, %d failed", passed, failed))

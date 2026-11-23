@@ -9,6 +9,7 @@ local UE = {}
 
 local cache = {
     activeWorld = nil,
+    fsnContainer = nil,
     gameplayStatics = nil,
     inputDeviceLibrary = nil,
     subsystemLibrary = nil,
@@ -68,6 +69,7 @@ end
 
 function UE.clearWorldContext()
     cache.activeWorld = nil
+    cache.fsnContainer = nil
 end
 
 function UE.getWorld()
@@ -556,6 +558,154 @@ function UE.advanceDialogueLine(dlgComp, confirmWidget)
     end)
     if not ok then
         Log.warn("Dialogue OnNextClicked failed: %s", tostring(err))
+        return false
+    end
+    return true
+end
+
+-- Returns (notificationWidget, confirmPromptWidget, isNotificationActive) if a fullscreen notification
+-- (WBP_FullScreenNotification_Generic_C or any subclass: RelationshipUp, GradientAttack,
+-- WorldMapCapacity, Quest, Item, etc.) is currently activated.
+-- When isNotificationActive is true but confirmPromptWidget is nil, the intro animation is still
+-- playing and callers must NOT fall through to underlying dialogues.
+function UE.getActiveFullscreenNotificationConfirm(pc0, trackedNotif)
+    if not isValid(pc0) then
+        return nil, nil, false
+    end
+    local ok, notifWidget, promptWidget, isActive = pcall(function()
+        if ensureStatics() and cache.gameplayStatics:IsGamePaused(pc0) == true then
+            return nil, nil, false
+        end
+
+        local notif = isValid(trackedNotif) and trackedNotif or nil
+        if not notif then
+            if not isValid(cache.fsnContainer) then
+                local found = FindFirstOf("WBP_FullScreenNotificationContainer_C")
+                if isValid(found) then
+                    cache.fsnContainer = found
+                end
+            end
+            local container = cache.fsnContainer
+            local queue = isValid(container) and container.NotificationQueue or nil
+            if isValid(queue) then
+                local active = queue:GetActiveWidget()
+                if isValid(active) then
+                    notif = active
+                end
+            end
+        end
+
+        if not isValid(notif) or notif:IsActivated() ~= true then
+            return nil, nil, false
+        end
+
+        -- Subclasses (RelationshipUp, GradientAttack) bind ConfirmPromptOverride;
+        -- base WBP_FullScreenNotification_Generic binds ConfirmPromptBase.
+        local prompt = nil
+        local okOv, ovPrompt = pcall(function() return notif.ConfirmPromptOverride end)
+        if okOv and isValid(ovPrompt) then
+            prompt = ovPrompt
+        else
+            local okBase, basePrompt = pcall(function() return notif.ConfirmPromptBase end)
+            if okBase and isValid(basePrompt) then
+                prompt = basePrompt
+            end
+        end
+
+        if not isValid(prompt) or prompt.IsActive ~= true then
+            return nil, nil, true
+        end
+
+        return notif, prompt, true
+    end)
+    if ok then
+        return notifWidget, promptWidget, isActive == true
+    end
+    return nil, nil, false
+end
+
+function UE.confirmFullscreenNotification(notifWidget, promptWidget)
+    if not isValid(notifWidget) then
+        return false
+    end
+    local ok, err = pcall(function()
+        local arg = isValid(promptWidget) and promptWidget or (CreateInvalidObject and CreateInvalidObject() or nil)
+        notifWidget:BndEvt__WBP_FullScreenNotification_Generic_ConfirmPrompt_K2Node_ComponentBoundEvent_0_CommonButtonBaseClicked__DelegateSignature(arg)
+    end)
+    if not ok then
+        Log.warn("Fullscreen notification confirm failed: %s", tostring(err))
+        return false
+    end
+    return true
+end
+
+-- Returns (modalWidget, buttonWidget, isModalActive) if a WBP_ModalPopup_C is currently activated
+-- and has a visible, enabled non-hold button for the requested action ("confirm" or "cancel").
+function UE.getActiveModalPopupButton(pc0, trackedModal, action)
+    if not isValid(pc0) then
+        return nil, nil, false
+    end
+    local ok, modalWidget, btnWidget, isActive = pcall(function()
+        if ensureStatics() and cache.gameplayStatics:IsGamePaused(pc0) == true then
+            return nil, nil, false
+        end
+
+        local modal = isValid(trackedModal) and trackedModal or nil
+        if not modal and FindAllOf then
+            local list = FindAllOf("WBP_ModalPopup_C")
+            if type(list) == "table" then
+                for i = #list, 1, -1 do
+                    local m = list[i]
+                    if isValid(m) and m:IsActivated() == true then
+                        modal = m
+                        break
+                    end
+                end
+            end
+        end
+        if not isValid(modal) or modal:IsActivated() ~= true then
+            return nil, nil, false
+        end
+
+        local btn = nil
+        if action == "confirm" then
+            if modal.IsHoldConfirm == true then
+                return nil, nil, true
+            end
+            btn = modal.ConfirmButton
+        elseif action == "cancel" then
+            btn = modal.CancelButton
+        else
+            return nil, nil, true
+        end
+
+        if not isValid(btn) or btn:IsVisible() ~= true or btn:GetIsEnabled() ~= true then
+            return nil, nil, true
+        end
+        return modal, btn, true
+    end)
+    if ok then
+        return modalWidget, btnWidget, isActive == true
+    end
+    return nil, nil, false
+end
+
+function UE.triggerModalPopupButton(modalWidget, btnWidget, action)
+    if not isValid(modalWidget) then
+        return false
+    end
+    local ok, err = pcall(function()
+        local arg = isValid(btnWidget) and btnWidget or (CreateInvalidObject and CreateInvalidObject() or nil)
+        if action == "confirm" then
+            modalWidget:BndEvt__WBP_ModalPopup_ConfirmButton_K2Node_ComponentBoundEvent_2_CommonButtonBaseClicked__DelegateSignature(arg)
+        elseif action == "cancel" then
+            modalWidget:BndEvt__WBP_ModalPopup_CancelButton_K2Node_ComponentBoundEvent_3_CommonButtonBaseClicked__DelegateSignature(arg)
+        else
+            error("unknown modal action: " .. tostring(action))
+        end
+    end)
+    if not ok then
+        Log.warn("ModalPopup %s failed: %s", tostring(action), tostring(err))
         return false
     end
     return true

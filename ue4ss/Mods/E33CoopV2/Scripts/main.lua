@@ -276,5 +276,25 @@ hooks.addBlueprint("/Game/UI/Widgets/FullScreenNotificationSystem/WBP_FullScreen
     gamepad.onDialoguePromptReady("notification_worldmap_capacity")
 end, true)
 
+hooks.addBlueprint("/Game/UI/Widgets/FullScreenNotificationSystem/WBP_FullScreenNotification_Generic.WBP_FullScreenNotification_Generic_C:BP_OnActivated", function(selfObj)
+    local ok, w = pcall(function() return selfObj:get() end)
+    gamepad.onFullscreenNotificationActivated(ok and w or nil)
+end, true)
+
+hooks.addBlueprint("/Game/UI/Widgets/FullScreenNotificationSystem/WBP_FullScreenNotification_Generic.WBP_FullScreenNotification_Generic_C:BP_OnDeactivated", function(selfObj)
+    local ok, w = pcall(function() return selfObj:get() end)
+    gamepad.onFullscreenNotificationDeactivated(ok and w or nil)
+end, true)
+
+hooks.addBlueprint("/Game/UI/Widgets/InGame_Menu/Modal/WBP_ModalPopup.WBP_ModalPopup_C:BP_OnActivated", function(selfObj)
+    local ok, w = pcall(function() return selfObj:get() end)
+    gamepad.onModalPopupActivated(ok and w or nil)
+end, true)
+
+hooks.addBlueprint("/Game/UI/Widgets/InGame_Menu/Modal/WBP_ModalPopup.WBP_ModalPopup_C:BP_OnDeactivated", function(selfObj)
+    local ok, w = pcall(function() return selfObj:get() end)
+    gamepad.onModalPopupDeactivated(ok and w or nil)
+end, true)
+
 hooks.installLazyWatchers()
 Log.info("Loaded E33CoopV2 (config=%s)", configPath)

@@ -42,9 +42,13 @@ function Gamepad.new(ue, clockFn)
         -- Guards against re-entrant SetCurrentInputType hook calls triggered by us
         suppressHook = false,
         loggedFirstTick = false,
-        -- Edge-detection for Gamepad_FaceButton_Bottom (A) to advance dialogue lines for non-primary users
+        -- Edge-detection for Gamepad_FaceButton_Bottom (A) / Right (B) on non-focusable overlays
+        -- (dialogue lines, fullscreen notifications, modal popups) for non-primary users
         wasConfirmDown = false,
-        lastDialogueAdvanceAt = 0,
+        wasCancelDown = false,
+        lastPromptActionAt = 0,
+        activeFullscreenNotification = nil,
+        activeModalPopup = nil,
     }
 
     local function sameUObject(a, b)
@@ -183,6 +187,10 @@ function Gamepad.new(ue, clockFn)
     function self.onMapReady()
         self.resetButtonState()
         self.menuWantsCursor = false
+        self.activeFullscreenNotification = nil
+        self.activeModalPopup = nil
+        self.wasConfirmDown = false
+        self.wasCancelDown = false
         self.syncExtraControllersToGamepad("map_ready")
         self.ensureGamepadIfSafe("map_ready")
         self.syncCursorVisibility("map_ready", false)
@@ -236,29 +244,78 @@ function Gamepad.new(ue, clockFn)
     -- Lightweight per-frame guard called from BP_jRPG_Controller_World::ReceiveTick.
     -- Catches direct C++ FCommonInputPreprocessor drops to MouseAndKeyboard on the same frame
     -- while strictly respecting held buttons so menu clicks are never canceled.
-    local function handleNonPrimaryDialogueConfirm(controller)
-        local justPressed, isDown = ue.isGamepadKeyPressed(controller, "Gamepad_FaceButton_Bottom")
-        local risingEdge = justPressed or (isDown and not self.wasConfirmDown)
-        self.wasConfirmDown = isDown
-        if not risingEdge then
+    -- Also dispatches direct PlayerInput A/B presses for non-focusable CommonUI overlays
+    -- (modal popups, fullscreen notifications like RelationshipUp/GradientAttack, dialogue lines)
+    -- whose TriggeringInputAction is dropped by CommonUIActionRouter when PC0 has user != 0.
+    local function handleNonPrimaryOverlayConfirm(controller)
+        local confirmJustPressed, confirmDown = ue.isGamepadKeyPressed(controller, "Gamepad_FaceButton_Bottom")
+        local confirmEdge = confirmJustPressed or (confirmDown and not self.wasConfirmDown)
+        self.wasConfirmDown = confirmDown
+
+        local cancelJustPressed, cancelDown = ue.isGamepadKeyPressed(controller, "Gamepad_FaceButton_Right")
+        local cancelEdge = cancelJustPressed or (cancelDown and not self.wasCancelDown)
+        self.wasCancelDown = cancelDown
+
+        if not confirmEdge and not cancelEdge then
             return false
         end
 
         local now = nowFn()
-        if (now - self.lastDialogueAdvanceAt) < 0.15 then
+        if (now - self.lastPromptActionAt) < 0.15 then
             return false
         end
 
-        local dlgComp, confirmWidget, hasChoices = ue.getActiveDialogueWaitingForConfirm(controller)
-        if not dlgComp or hasChoices then
-            return false
+        if confirmEdge then
+            -- 1. Topmost: active WBP_ModalPopup (non-hold Confirm button)
+            if ue.getActiveModalPopupButton and ue.triggerModalPopupButton then
+                local modal, btn, modalBlocking = ue.getActiveModalPopupButton(controller, self.activeModalPopup, "confirm")
+                if modal and ue.triggerModalPopupButton(modal, btn, "confirm") then
+                    self.lastPromptActionAt = now
+                    self.activeModalPopup = nil
+                    Log.debug("Confirmed WBP_ModalPopup directly via PlayerInput A for non-primary user")
+                    return true
+                end
+                if modalBlocking then
+                    return false
+                end
+            end
+
+            -- 2. Fullscreen notifications (RelationshipUp, GradientAttack, WorldMapCapacity, Quest, Generic)
+            if ue.getActiveFullscreenNotificationConfirm and ue.confirmFullscreenNotification then
+                local notif, prompt, fsnBlocking = ue.getActiveFullscreenNotificationConfirm(controller, self.activeFullscreenNotification)
+                if notif and ue.confirmFullscreenNotification(notif, prompt) then
+                    self.lastPromptActionAt = now
+                    self.activeFullscreenNotification = nil
+                    Log.debug("Confirmed FullScreenNotification directly via PlayerInput A for non-primary user")
+                    return true
+                end
+                if fsnBlocking then
+                    return false
+                end
+            end
+
+            -- 3. Active dialogue line without choice buttons
+            local dlgComp, confirmWidget, hasChoices = ue.getActiveDialogueWaitingForConfirm(controller)
+            if dlgComp and not hasChoices and ue.advanceDialogueLine(dlgComp, confirmWidget) then
+                self.lastPromptActionAt = now
+                Log.debug("Advanced dialogue line directly via PlayerInput A for non-primary user")
+                return true
+            end
         end
 
-        if ue.advanceDialogueLine(dlgComp, confirmWidget) then
-            self.lastDialogueAdvanceAt = now
-            Log.debug("Advanced dialogue line directly via PlayerInput A for non-primary user")
-            return true
+        if cancelEdge then
+            -- Active WBP_ModalPopup Cancel button
+            if ue.getActiveModalPopupButton and ue.triggerModalPopupButton then
+                local modal, btn = ue.getActiveModalPopupButton(controller, self.activeModalPopup, "cancel")
+                if modal and ue.triggerModalPopupButton(modal, btn, "cancel") then
+                    self.lastPromptActionAt = now
+                    self.activeModalPopup = nil
+                    Log.debug("Cancelled WBP_ModalPopup directly via PlayerInput B for non-primary user")
+                    return true
+                end
+            end
         end
+
         return false
     end
 
@@ -276,9 +333,10 @@ function Gamepad.new(ue, clockFn)
         end
         if not nonPrimary then
             self.wasConfirmDown = false
+            self.wasCancelDown = false
             return
         end
-        handleNonPrimaryDialogueConfirm(controller)
+        handleNonPrimaryOverlayConfirm(controller)
         self.ensureGamepadIfSafe("tick", controller)
     end
 
@@ -287,15 +345,39 @@ function Gamepad.new(ue, clockFn)
         self.resetButtonState()
         self.syncExtraControllersToGamepad(reason)
         local pc0 = ue.getPlayerController(0)
-        -- Snapshot A button state so holding A from the interaction prompt doesn't immediately skip line 1
-        local _, isDown = ue.isGamepadKeyPressed(pc0, "Gamepad_FaceButton_Bottom")
-        self.wasConfirmDown = isDown
-        self.lastDialogueAdvanceAt = nowFn()
+        -- Snapshot A/B button state so holding a button from the previous prompt doesn't skip the new overlay
+        local _, confirmDown = ue.isGamepadKeyPressed(pc0, "Gamepad_FaceButton_Bottom")
+        local _, cancelDown = ue.isGamepadKeyPressed(pc0, "Gamepad_FaceButton_Right")
+        self.wasConfirmDown = confirmDown
+        self.wasCancelDown = cancelDown
+        self.lastPromptActionAt = nowFn()
         local sub = pc0 and ue.getCommonInputSubsystem(pc0) or nil
         local okT, curType = pcall(function() return sub and sub:GetCurrentInputType() or "nil" end)
         Log.debug("DialoguePromptReady (%s): pc0User=%s inputType=%s",
             tostring(reason), tostring(ue.getPlatformUserId(pc0)), tostring(okT and curType or "err"))
         self.ensureGamepadIfSafe(reason)
+    end
+
+    function self.onFullscreenNotificationActivated(widget)
+        self.activeFullscreenNotification = widget
+        self.onDialoguePromptReady("fullscreen_notification_activated")
+    end
+
+    function self.onFullscreenNotificationDeactivated(widget)
+        if widget == nil or sameUObject(self.activeFullscreenNotification, widget) then
+            self.activeFullscreenNotification = nil
+        end
+    end
+
+    function self.onModalPopupActivated(widget)
+        self.activeModalPopup = widget
+        self.onDialoguePromptReady("modal_popup_activated")
+    end
+
+    function self.onModalPopupDeactivated(widget)
+        if widget == nil or sameUObject(self.activeModalPopup, widget) then
+            self.activeModalPopup = nil
+        end
     end
 
     function self.onButtonPressed(btnObj)
