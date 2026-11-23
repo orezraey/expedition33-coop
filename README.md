@@ -45,7 +45,7 @@ This rewrite replaces all fragile Kismet bytecode patching (`*Patch.cs`) with a 
 
 ## Configuration (`Mods/E33CoopV2/config.json`)
 
-Created automatically on first run (and migrated from any existing `"Coop"` SaveGame):
+Created automatically on first run. The per-slot `Character 1/2/3 Assignment` values of an existing `"Coop"` SaveGame are imported as `legacySlots`. Per-character choices saved by a v1 bytecode-patched `.utoc` are only imported if that patched `.utoc` is still installed on the first run: the unpatched base `CoopConfig` has no fields for them, so otherwise pick them again in Settings.
 
 ```json
 {

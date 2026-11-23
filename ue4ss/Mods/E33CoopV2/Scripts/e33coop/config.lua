@@ -115,7 +115,8 @@ function Config.new(filePath, rngFn)
     end
 
     -- Migrates settings from the Unreal "Coop" SaveGame when no config.json exists yet
-    -- (including both vanilla slot assignments and any v1 <Char>Assignment fields).
+    -- (vanilla slot assignments, plus v1 <Char>Assignment fields, which only exist while the
+    -- v1-patched CoopConfig class is still installed).
     -- Returns true if any value on the Unreal CoopConfig had raw value 3 (Random) and should be sanitized.
     function self.importFromLegacySave(slotValues, v1CharValues)
         local hadRawRandom = false

@@ -272,6 +272,40 @@ runTest("battle: character-first projection handles normal, OverrideParty solo, 
     assertEq(slotsPrologue[0], Roster.PLAYER_2, "prologue Frey at spot 0 -> slot 0")
 end)
 
+runTest("battle: legacy per-slot settings follow the party slot, not the battle spot", function()
+    assertEq(Battle.spotToSlot(0, true), 1, "spot 0 -> slot 1")
+    assertEq(Battle.spotToSlot(1, true), 2, "spot 1 -> slot 2")
+    assertEq(Battle.spotToSlot(2, true), 0, "spot 2 -> slot 0")
+    assertEq(Battle.spotToSlot(0, false), 0, "solo-ish party: spot 0 -> slot 0")
+
+    -- Fresh install: no per-character choice yet, Character1/2/3Assignment = P1/P2/P3
+    local cfg = Config.new(nil)
+    local party = { "Frey", "Lune", "Maelle" }
+    -- Normal 3-member battle: party[1] on spot 2, party[2] on spot 0, party[3] on spot 1
+    local slots = Battle.computeProjectedSlots(cfg, party, { [2] = "Frey", [0] = "Lune", [1] = "Maelle" }, nil, 3, true)
+    assertEq(slots[0], Roster.PLAYER_1, "Frey keeps Character1Assignment")
+    assertEq(slots[1], Roster.PLAYER_2, "Lune keeps Character2Assignment")
+    assertEq(slots[2], Roster.PLAYER_3, "Maelle keeps Character3Assignment")
+    -- Forced party in another order (e.g. a boss): each character still keeps its own slot setting
+    local forced = Battle.computeProjectedSlots(cfg, party, { [2] = "Maelle", [0] = "Frey", [1] = "Lune" }, nil, 3, true)
+    assertEq(forced[0], Roster.PLAYER_3, "Maelle on spot 2 keeps P3")
+    assertEq(forced[1], Roster.PLAYER_1, "Frey on spot 0 keeps P1")
+    assertEq(forced[2], Roster.PLAYER_2, "Lune on spot 1 keeps P2")
+
+    -- The turn handoff must pick the same player as the projection
+    local ue = makeMockUE()
+    local ctrl = Control.new(ue, cfg, Gamepad.new(ue))
+    local battle = Battle.new(ue, cfg, ctrl)
+    ctrl.onBattleBegin()
+    battle.onTurnStart({ charId = "Lune", IsPlayerControlledCharacter = true, BattleSpotIndex = 0 })
+    assertEq(ue.state.pc0User, 1, "Lune (party slot 2) on spot 0 -> P2")
+    assertEq(ue.state.toasts[#ue.state.toasts], "Player 2's Turn (Lune)", "toast names P2")
+    battle.onTurnStart({ charId = "Frey", IsPlayerControlledCharacter = true, BattleSpotIndex = 2 })
+    assertEq(ue.state.pc0User, 0, "Frey (party slot 1) on spot 2 -> P1")
+    battle.onTurnStart({ charId = "Maelle", IsPlayerControlledCharacter = true, BattleSpotIndex = 1 })
+    assertEq(ue.state.pc0User, 2, "Maelle (party slot 3) on spot 1 -> P3")
+end)
+
 runTest("control: full battle lifecycle, enemy turn reset, START block, one-shot victory, map change", function()
     local ue = makeMockUE()
     local cfg = Config.new(nil)
@@ -326,8 +360,8 @@ runTest("control: full battle lifecycle, enemy turn reset, START block, one-shot
     -- P2 takes over, changes map -> preserved across map load
     ue.state.pc0User = 1
     ctrl.onStartTakeover()
+    ue.state.pc0User = 0 -- base PrepareToChangeMap hands PC0 to P1 before our post-hook runs
     ctrl.onPrepareToChangeMap()
-    ue.state.pc0User = 0 -- engine resets PC0 on new map
     ctrl.onMapReady()
     assertEq(ue.state.pc0User, 1, "map load restores exploration user P2")
 end)

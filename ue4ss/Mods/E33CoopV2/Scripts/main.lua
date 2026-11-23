@@ -136,10 +136,10 @@ hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Character_Battl
     battle.onTurnEnded(selfObj:get())
 end)
 
--- Settings UI & Team Screen PlayerIndicator
+-- Settings UI & Team Screen PlayerIndicator (optional: their classes only load when those menus first open)
 hooks.addBlueprint("/Game/UI/Widgets/InGame_Menu/Settings/OptionsList/WBP_Settings_GeneralOptionsList.WBP_Settings_GeneralOptionsList_C:SetupAvailableOptions", function(selfObj)
     ui.onSetupSettingsMenu(selfObj:get())
-end)
+end, true)
 
 for slot = 1, 3 do
     local slotZeroBased = slot - 1
@@ -150,13 +150,14 @@ for slot = 1, 3 do
             if ok then
                 ui.onUpdateCharAssignment(slotZeroBased, val)
             end
-        end
+        end,
+        true
     )
 end
 
 hooks.addBlueprint("/Game/Coop/PlayerIndicator.PlayerIndicator_C:GetText", function(selfObj, returnValueParam)
     ui.onPlayerIndicatorGetText(selfObj:get(), returnValueParam)
-end)
+end, true)
 
 -- Dialogue & Fullscreen Notification Gamepad safety nets (e.g. Dialogue Confirm, RelationshipUp)
 hooks.addBlueprint("/Game/UI/Widgets/DialogueSystem/WBP_DialogueContainer.WBP_DialogueContainer_C:BP_OnActivated", function()

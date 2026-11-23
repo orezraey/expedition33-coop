@@ -56,17 +56,11 @@ function Control.new(ue, config, gamepad)
         end
     end
 
-    -- Called when BP_jRPG_Controller_World::PrepareToChangeMap runs.
-    -- During exploration, capture the current explorer; during battle (e.g. game over reload),
-    -- keep the exploration user saved when the battle began.
+    -- Called after BP_jRPG_Controller_World::PrepareToChangeMap runs (Blueprint hooks are post-hooks).
+    -- The base mod's PrepareToChangeMap hands PC0 to PrimaryUser BEFORE calling the original, so PC0
+    -- no longer tells who was exploring here: keep the explorer tracked by START takeovers and battles.
     function self.onPrepareToChangeMap()
-        if not self.inBattle then
-            local pc0 = ue.getPlayerController(0)
-            local current = ue.getPlatformUserId(pc0)
-            if current ~= nil then
-                self.explorationUserId = current
-            end
-        end
+        ensureExplorationUserInitialized()
         Log.info("Map changing (inBattle=%s): preserving exploration user %s",
             tostring(self.inBattle), tostring(self.explorationUserId))
         self.inBattle = false

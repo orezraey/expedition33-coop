@@ -14,6 +14,36 @@ local Roster = require("e33coop.roster")
 
 local Battle = {}
 
+-- Inverse of unpatched MapBattleSpotToUser: the CoopConfig slot (Character{1,2,3}Assignment, 0-based)
+-- the base mod reads for a battle spot.
+--   MoreThan1 == true : spot 0 -> slot 1, spot 1 -> slot 2, spot 2 -> slot 0
+--   MoreThan1 == false: spot 0 -> slot 0, spot 1 -> slot 2, spot 2 -> slot 0
+function Battle.spotToSlot(spot, moreThanOne)
+    if spot == 0 then
+        return moreThanOne and 1 or 0
+    elseif spot == 1 then
+        return 2
+    elseif spot == 2 then
+        return 0
+    end
+    return nil
+end
+
+-- Party slot whose legacy (per-slot) setting applies to a character standing on a battle spot.
+-- A battle spot is NOT a party slot: with a full party the character on spot 0 is party member 2.
+-- Character-first: use the character's own position in CurrentParty; characters outside it
+-- (reserves, OverrideParty guests) fall back to the slot the base mod reads for that spot.
+function Battle.fallbackSlotFor(charId, spot, partyNames, moreThanOne)
+    if charId ~= nil and type(partyNames) == "table" then
+        for i = 1, math.min(#partyNames, Roster.MAX_PARTY_SLOTS) do
+            if partyNames[i] == charId then
+                return i - 1
+            end
+        end
+    end
+    return Battle.spotToSlot(spot, moreThanOne) or 0
+end
+
 -- Pure function (unit-testable without UE):
 -- Computes the 3 slot values { [0]=c1, [1]=c2, [2]=c3 } that unpatched CoopConfig must hold
 -- so MapBattleSpotToUser / MapUserToBattleSpots return the exact character-first player index.
@@ -32,32 +62,10 @@ function Battle.computeProjectedSlots(config, partyNames, spotChars, soloInfo, a
 
     if type(spotChars) == "table" and next(spotChars) ~= nil then
         for spot, charId in pairs(spotChars) do
-            local targetSlot = nil
-            if moreThanOne then
-                -- Inverse of unpatched MapBattleSpotToUser when MoreThan1 == true:
-                --   spot 0 -> Character2Assignment (slot 1)
-                --   spot 1 -> Character3Assignment (slot 2)
-                --   spot 2 -> Character1Assignment (slot 0)
-                if spot == 0 then
-                    targetSlot = 1
-                elseif spot == 1 then
-                    targetSlot = 2
-                elseif spot == 2 then
-                    targetSlot = 0
-                end
-            else
-                -- When MoreThan1 == false, unpatched MapBattleSpotToUser maps spot 0 -> slot 0
-                if spot == 0 then
-                    targetSlot = 0
-                elseif spot == 1 then
-                    targetSlot = 2
-                elseif spot == 2 then
-                    targetSlot = 0
-                end
-            end
-
+            local targetSlot = Battle.spotToSlot(spot, moreThanOne)
             if targetSlot ~= nil then
-                slots[targetSlot] = config.resolveEffectivePlayer(charId, targetSlot, activeUserCount)
+                local fallback = Battle.fallbackSlotFor(charId, spot, partyNames, moreThanOne)
+                slots[targetSlot] = config.resolveEffectivePlayer(charId, fallback, activeUserCount)
             end
         end
     end
@@ -173,7 +181,22 @@ function Battle.new(ue, config, control)
 
         local charId = ue.getCharacterNameFromBattleActor(character)
         local okSpot, spot = pcall(function() return character.BattleSpotIndex end)
-        local fallbackSlot = (okSpot and type(spot) == "number") and spot or 0
+        if not (okSpot and type(spot) == "number") then
+            spot = 0
+        end
+        -- Same fallback slot as syncConfig, so the toast and PC0 agree with the base mod's defense routing
+        local partyNames = ue.getCurrentPartyNames()
+        local fallbackSlot
+        local bm = ue.getBattleManager()
+        local isSolo, soloIdx = false, nil
+        if bm then
+            isSolo, soloIdx = ue.getOverrideSoloBattleInfo(bm, partyNames)
+        end
+        if isSolo then
+            fallbackSlot = soloIdx
+        else
+            fallbackSlot = Battle.fallbackSlotFor(charId, spot, partyNames, ue.moreThanOneCharInParty(partyNames))
+        end
 
         local activeUsers = ue.getAllActiveUsers()
         local playerIndex = config.resolveEffectivePlayer(charId, fallbackSlot, #activeUsers)
