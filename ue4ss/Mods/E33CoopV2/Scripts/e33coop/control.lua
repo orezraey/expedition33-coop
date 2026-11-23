@@ -11,6 +11,8 @@ function Control.new(ue, config, gamepad)
     local self = {
         -- PlatformUserId.InternalId of the player exploring outside battle (persists across map changes in Lua)
         explorationUserId = nil,
+        -- If ModActor::ReceiveBeginPlay ran before CoopControllers finished spawning, retry restore as soon as they exist
+        pendingMapRestoreUserId = nil,
         inBattle = false,
         battleEndState = Roster.BATTLE_END_NONE,
         battleEndHandedOver = false,
@@ -33,8 +35,11 @@ function Control.new(ue, config, gamepad)
 
     -- Every PC0 owner change also re-applies the cursor: hidden for P2/P3, the game's own for P1.
     local function setPC0(targetUserId, reason)
-        ue.setController0User(targetUserId, reason)
-        gamepad.syncCursorVisibility(reason)
+        local ok = ue.setController0User(targetUserId, reason)
+        if ok then
+            gamepad.syncCursorVisibility(reason)
+        end
+        return ok
     end
 
     function self.isInBattle()
@@ -45,7 +50,21 @@ function Control.new(ue, config, gamepad)
         return self.explorationUserId
     end
 
-    -- Called once per map after ModActor::ReceiveBeginPlay finishes creating all CoopControllers.
+    function self.tryPendingMapRestore(source)
+        local target = self.pendingMapRestoreUserId
+        if target == nil or self.inBattle then
+            return false
+        end
+        if setPC0(target, "map_restore:" .. tostring(source)) then
+            self.pendingMapRestoreUserId = nil
+            Log.info("Restored exploration control to user %s (%s)", tostring(target), tostring(source))
+            gamepad.onMapReady()
+            return true
+        end
+        return false
+    end
+
+    -- Called once per map when ModActor::ReceiveBeginPlay runs.
     function self.onMapReady()
         self.inBattle = false
         self.battleEndState = Roster.BATTLE_END_NONE
@@ -54,12 +73,21 @@ function Control.new(ue, config, gamepad)
         gamepad.resetButtonState()
 
         if self.explorationUserId ~= nil then
-            Log.info("Map ready: restoring exploration control to user %s", tostring(self.explorationUserId))
-            setPC0(self.explorationUserId, "map_ready")
+            self.pendingMapRestoreUserId = self.explorationUserId
+            if not self.tryPendingMapRestore("map_ready") then
+                Log.info("Map ready: deferring exploration restore to user %s until CoopControllers finish spawning",
+                    tostring(self.explorationUserId))
+                gamepad.onMapReady()
+            end
         else
             ensureExplorationUserInitialized()
+            gamepad.onMapReady()
         end
-        gamepad.onMapReady()
+    end
+
+    -- Called POST after ModActor::SetupCoopController creates a CoopController on the new map.
+    function self.onCoopControllerReady()
+        self.tryPendingMapRestore("setup_coop_controller")
     end
 
     -- Called after BP_jRPG_Controller_World::PrepareToChangeMap runs (Blueprint hooks are post-hooks).
@@ -73,6 +101,7 @@ function Control.new(ue, config, gamepad)
         self.battleEndState = Roster.BATTLE_END_NONE
         self.battleEndHandedOver = false
         self.expectedBattleUserId = nil
+        self.pendingMapRestoreUserId = nil
         gamepad.resetButtonState()
     end
 
@@ -94,6 +123,7 @@ function Control.new(ue, config, gamepad)
 
         local newOwner = ue.getPlatformUserId(pc0)
         if newOwner ~= nil then
+            self.pendingMapRestoreUserId = nil
             self.explorationUserId = newOwner
             Log.info("START takeover accepted: exploration user is now %s", tostring(newOwner))
             gamepad.ensureGamepadIfSafe("start_takeover")

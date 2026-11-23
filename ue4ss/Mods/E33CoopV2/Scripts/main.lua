@@ -42,12 +42,19 @@ local hooks = Hooks.new()
 -- 1. Native hooks (/Script/...) — safe click tracking & CommonUI gamepad guard
 -- ---------------------------------------------------------------------------
 
-hooks.registerNative("/Script/CommonUI.CommonButtonBase:HandleButtonPressed", function()
-    gamepad.onButtonPressed()
+hooks.registerNative("/Script/CommonUI.CommonButtonBase:HandleButtonPressed", function(selfObj)
+    local ok, btn = pcall(function() return selfObj:get() end)
+    gamepad.onButtonPressed(ok and btn or nil)
 end)
 
-hooks.registerNative("/Script/CommonUI.CommonButtonBase:HandleButtonReleased", function()
-    gamepad.onButtonReleased()
+hooks.registerNative("/Script/CommonUI.CommonButtonBase:HandleButtonReleased", function(selfObj)
+    local ok, btn = pcall(function() return selfObj:get() end)
+    gamepad.onButtonReleased(ok and btn or nil)
+end)
+
+hooks.registerNative("/Script/CommonUI.CommonButtonBase:HandleButtonClicked", function(selfObj)
+    local ok, btn = pcall(function() return selfObj:get() end)
+    gamepad.onButtonClicked(ok and btn or nil)
 end)
 
 hooks.registerNative("/Script/CommonInput.CommonInputSubsystem:SetCurrentInputType", function(selfObj, newInputType)
@@ -80,8 +87,13 @@ local function warnIfV1PatchedPakDetected()
     if not pc1 then
         return
     end
-    local ok, val = pcall(function() return pc1.CoopExplorationUserId end)
-    if ok and val ~= nil then
+    -- In UE4SS, accessing a missing property returns an invalid proxy rather than nil;
+    -- check that the v1 FPlatformUserId struct's numeric InternalId actually exists.
+    local ok, internalId = pcall(function()
+        local prop = pc1.CoopExplorationUserId
+        return prop and prop.InternalId or nil
+    end)
+    if ok and type(internalId) == "number" then
         warnedV1Pak = true
         Log.warn("Detected v1 bytecode-patched expedition33_coop_P.utoc (CoopController.CoopExplorationUserId exists). "
             .. "Please restore the unpatched upstream expedition33_coop_P.utoc so v1 patches and E33CoopV2 do not collide.")
@@ -89,23 +101,58 @@ local function warnIfV1PatchedPakDetected()
 end
 
 -- Map lifecycle & CoopConfig load
-hooks.addBlueprint("/Game/Coop/ModActor.ModActor_C:ReceiveBeginPlay", function()
+hooks.addBlueprint("/Game/Coop/ModActor.ModActor_C:ReceiveBeginPlay", function(selfObj)
+    local ok, ma = pcall(function() return selfObj:get() end)
+    if ok and ma then
+        UE.setWorldContext(ma)
+    end
     warnIfV1PatchedPakDetected()
     control.onMapReady()
     battle.onCoopConfigLoaded()
 end)
 
-hooks.addBlueprint("/Game/Coop/ModActor.ModActor_C:Completed_5159FBB749F4C17CA0ECC19333961EAE", function()
+hooks.addBlueprint("/Game/Coop/ModActor.ModActor_C:SetupCoopController", function(selfObj)
+    local ok, ma = pcall(function() return selfObj:get() end)
+    if ok and ma then
+        UE.setWorldContext(ma)
+    end
+    control.onCoopControllerReady()
+end)
+
+hooks.addBlueprint("/Game/Coop/ModActor.ModActor_C:Completed_5159FBB749F4C17CA0ECC19333961EAE", function(selfObj)
+    local ok, ma = pcall(function() return selfObj:get() end)
+    if ok and ma then
+        UE.setWorldContext(ma)
+    end
     battle.onCoopConfigLoaded()
 end)
 
-hooks.addBlueprint("/Game/Coop/CoopController.CoopController_C:InpActEvt_Gamepad_Special_Right_K2Node_InputKeyEvent_0", function()
+hooks.addBlueprint("/Game/Coop/CoopController.CoopController_C:InpActEvt_Gamepad_Special_Right_K2Node_InputKeyEvent_0", function(selfObj)
+    local ok, cc = pcall(function() return selfObj:get() end)
+    if ok and cc then
+        UE.setWorldContext(cc)
+    end
     control.onStartTakeover()
 end)
 
--- World controller battle & map transitions
-hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.BP_jRPG_Controller_World_C:PrepareToChangeMap", function()
+-- World controller tick, battle & map transitions
+hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.BP_jRPG_Controller_World_C:ReceiveTick", function(selfObj)
+    local ok, pc0 = pcall(function() return selfObj:get() end)
+    if not ok or not pc0 then
+        return
+    end
+    UE.setWorldContext(pc0)
+    control.tryPendingMapRestore("tick")
+    gamepad.onTick(pc0)
+end)
+
+hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.BP_jRPG_Controller_World_C:PrepareToChangeMap", function(selfObj)
+    local ok, pc0 = pcall(function() return selfObj:get() end)
+    if ok and pc0 then
+        UE.setWorldContext(pc0)
+    end
     control.onPrepareToChangeMap()
+    UE.clearWorldContext()
 end)
 
 hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.BP_jRPG_Controller_World_C:OnBattleBeginTransitionRequested", function()
@@ -202,23 +249,23 @@ end, true)
 
 -- Dialogue & Fullscreen Notification Gamepad safety nets (e.g. Dialogue Confirm, RelationshipUp)
 hooks.addBlueprint("/Game/UI/Widgets/DialogueSystem/WBP_DialogueContainer.WBP_DialogueContainer_C:BP_OnActivated", function()
-    gamepad.ensureGamepadIfSafe("dialogue_activated")
+    gamepad.onDialoguePromptReady("dialogue_activated")
 end, true)
 
 hooks.addBlueprint("/Game/UI/Widgets/DialogueSystem/WBP_DialogueContainer.WBP_DialogueContainer_C:ShowDialogueLine", function()
-    gamepad.ensureGamepadIfSafe("dialogue_line")
+    gamepad.onDialoguePromptReady("dialogue_line")
 end, true)
 
 hooks.addBlueprint("/Game/UI/Widgets/FullScreenNotificationSystem/WBP_FullScreenNotificationContainer.WBP_FullScreenNotificationContainer_C:OnRelationshipUp", function()
-    gamepad.ensureGamepadIfSafe("notification_relationship_up")
+    gamepad.onDialoguePromptReady("notification_relationship_up")
 end, true)
 
 hooks.addBlueprint("/Game/UI/Widgets/FullScreenNotificationSystem/WBP_FullScreenNotificationContainer.WBP_FullScreenNotificationContainer_C:PushNotificationFromGameAction", function()
-    gamepad.ensureGamepadIfSafe("notification_game_action")
+    gamepad.onDialoguePromptReady("notification_game_action")
 end, true)
 
 hooks.addBlueprint("/Game/UI/Widgets/FullScreenNotificationSystem/WBP_FullScreenNotificationContainer.WBP_FullScreenNotificationContainer_C:OnWorldMapCapacityUnlocked", function()
-    gamepad.ensureGamepadIfSafe("notification_worldmap_capacity")
+    gamepad.onDialoguePromptReady("notification_worldmap_capacity")
 end, true)
 
 hooks.installLazyWatchers()

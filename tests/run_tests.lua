@@ -522,6 +522,69 @@ runTest("ui: Settings menu labels/random option, save sanitization, and PlayerIn
     assertEq(retVerso:get():ToString(), "", "PlayerIndicator hides non-party character")
 end)
 
+runTest("gamepad: onTick repairs C++ MouseAndKeyboard drop for P2 dialogue without canceling held clicks", function()
+    local ue = makeMockUE()
+    local fakeTime = 10.0
+    local gp = Gamepad.new(ue, function() return fakeTime end)
+
+    -- P2 owns PC0; C++ FCommonInputPreprocessor silently dropped inputType to 0 (bypassing ProcessEvent)
+    ue.state.pc0User = 1
+    ue.state.inputType = Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD
+    ue.state.setInputTypeCalls = {}
+
+    -- Idle tick repairs immediately so dialogue Confirm works and keyboard icons don't stick
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.inputType, Roster.INPUT_TYPE_GAMEPAD, "onTick restores Gamepad for P2")
+    assertEq(#ue.state.setInputTypeCalls, 1, "restored once")
+
+    -- Next tick when already Gamepad does nothing
+    gp.onTick(ue.pc0)
+    assertEq(#ue.state.setInputTypeCalls, 1, "no redundant SetCurrentInputType calls")
+
+    -- While a button is held, onTick MUST NOT interrupt the press
+    local btn = { GetAddress = function() return 0x9999 end }
+    gp.onButtonPressed(btn)
+    ue.state.inputType = Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.inputType, Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD, "onTick respects held button")
+
+    -- If the widget is destroyed/clicked without release, timeout self-heals
+    fakeTime = 12.0
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.inputType, Roster.INPUT_TYPE_GAMEPAD, "stale held button auto-expired and Gamepad restored")
+end)
+
+runTest("control: deferred map restore retries on SetupCoopController / tick until PC1 exists", function()
+    local ue = makeMockUE()
+    local cfg = Config.new(nil)
+    local gp = Gamepad.new(ue)
+    local ctrl = Control.new(ue, cfg, gp)
+
+    -- P2 is exploring and changes map
+    ue.state.pc0User = 1
+    ctrl.onStartTakeover()
+    ctrl.onPrepareToChangeMap()
+    ue.state.pc0User = 0
+
+    -- Simulate PC1 not yet spawned during ModActor::ReceiveBeginPlay
+    local origSet = ue.setController0User
+    local pc1Spawned = false
+    ue.setController0User = function(targetId, reason)
+        if not pc1Spawned and targetId == 1 then
+            return false
+        end
+        return origSet(targetId, reason)
+    end
+
+    ctrl.onMapReady()
+    assertEq(ue.state.pc0User, 0, "still 0 before PC1 exists")
+
+    -- Now SetupCoopController spawns PC1 -> retry immediately restores user 1
+    pc1Spawned = true
+    ctrl.onCoopControllerReady()
+    assertEq(ue.state.pc0User, 1, "restored to user 1 as soon as CoopController exists")
+end)
+
 print(string.format("\nResults: %d passed, %d failed", passed, failed))
 if failed > 0 then
     os.exit(1)

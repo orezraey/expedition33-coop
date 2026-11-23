@@ -1,25 +1,25 @@
 -- Click-safe CommonUI Gamepad mode keeper & multi-controller hardware cursor suppressor.
 --
 -- Why this exists (two related CommonUI + multi-LocalPlayer bugs in UE5.4):
---   1. Non-primary player (P2/P3) on PC0: CommonUI / Slate drops PC0's CommonInputSubsystem
---      back to MouseAndKeyboard (0), showing keyboard prompts and blocking Confirm actions in
---      dialogues and fullscreen notifications (e.g. RelationshipUp). Forcing Gamepad every tick
---      breaks menu clicks because SetCurrentInputType mid-press cancels CommonButton clicks.
+--   1. Non-primary player (P2/P3) on PC0: CommonUI's C++ FCommonInputPreprocessor calls
+--      UCommonInputSubsystem::SetCurrentInputType(MouseAndKeyboard) directly in C++ (bypassing
+--      UObject::ProcessEvent), causing keyboard icons to appear and blocking CommonUI Confirm
+--      actions in dialogues and fullscreen notifications. Blindly forcing Gamepad every tick
+--      cancels held menu buttons before HandleButtonClicked fires.
 --   2. Center-screen blinking mouse cursor (e.g. resting at an Expedition Flag for 2-3s):
---      The game unconditionally sets PC0.bShowMouseCursor = true when opening menus
---      (OpenSavePointMenu, SetInputModeUI, SetInputModeBattle) and relies on CommonUI's
---      FCommonAnalogCursor to hide and center the hardware cursor in Gamepad mode. In co-op,
---      the extra CoopControllers (PC1/PC2) sit in MouseAndKeyboard (0) on the same fullscreen
---      viewport, AND during Rest (Anim_Rest) WBP_SavePointMenu deactivates while bShowMouseCursor
---      stays true, causing Slate to flicker the hardware cursor at Viewport/2 for 2-3 seconds.
+--      The game unconditionally sets PC0.bShowMouseCursor = true on menus and relies on CommonUI's
+--      FCommonAnalogCursor to hide/center the cursor in Gamepad mode, while extra CoopControllers
+--      (PC1/PC2) sit in MouseAndKeyboard (0) on the same shared viewport.
 --
 -- Solution:
---   - Keep extra CoopControllers (PC1/PC2) locked to Gamepad (1) with hardware cursor disabled.
---   - Keep PC0.bShowMouseCursor = false & CurrentMouseCursor = None (0) while P2/P3 own PC0.
---   - Hide P1's cursor during Rest (the menu is gone but bShowMouseCursor stays true); otherwise
---     give P1 the game's own cursor behaviour, restored whenever PC0 comes back to P1.
---   - Track held buttons via HandleButtonPressed / HandleButtonReleased so input-type switches
---     never cancel held clicks.
+--   - Track live held buttons by UObject key (with GC/timeout self-healing + Clicked/Released
+--     cleanup so a destroyed widget can never leave held state stuck).
+--   - Run a lightweight click-safe check in ReceiveTick: while PC0 belongs to a non-primary user
+--     and NO button is held, immediately restore CommonInputSubsystem to Gamepad (1) on the same
+--     frame C++ drops it — eliminating keyboard icon flicker and keeping dialogue Confirm working
+--     100% reliably without ever canceling menu clicks!
+--   - Keep extra CoopControllers (PC1/PC2) locked to Gamepad (1) with hardware cursor hidden,
+--     and suppress PC0.bShowMouseCursor whenever PC0 is in Gamepad mode (preserving P1 M&K).
 
 local Log = require("e33coop.log")
 local Roster = require("e33coop.roster")
@@ -28,12 +28,16 @@ local Gamepad = {}
 
 local CURSOR_NONE = 0    -- EMouseCursor::None
 local CURSOR_DEFAULT = 1 -- EMouseCursor::Default
+local HELD_TIMEOUT_SEC = 1.5
 
-function Gamepad.new(ue)
+function Gamepad.new(ue, clockFn)
+    local nowFn = clockFn or os.clock
+
     local self = {
-        heldButtons = 0,
+        -- Map of [buttonKey] = { obj = buttonObj, pressedAt = number }
+        heldButtons = {},
         deferredRestore = false,
-        -- Last cursor visibility the game asked for at a hooked point (restored when P1 gets PC0 back)
+        -- Tracks whether the currently active game UI originally requested a cursor (for M&K fallback)
         menuWantsCursor = false,
         -- Guards against re-entrant SetCurrentInputType hook calls triggered by us
         suppressHook = false,
@@ -52,8 +56,34 @@ function Gamepad.new(ue)
         return okEq and same == true
     end
 
-    local function isNonPrimaryOnPC0()
-        local pc0 = ue.getPlayerController(0)
+    local function buttonKey(btnObj)
+        if not btnObj then
+            return "unknown"
+        end
+        local ok, addr = pcall(function() return btnObj:GetAddress() end)
+        if ok and addr ~= nil then
+            return addr
+        end
+        return tostring(btnObj)
+    end
+
+    local function hasHeldButton()
+        local now = nowFn()
+        local anyHeld = false
+        for k, entry in pairs(self.heldButtons) do
+            local stale = (now - entry.pressedAt) > HELD_TIMEOUT_SEC
+            local invalid = entry.obj ~= nil and not ue.isValid(entry.obj)
+            if stale or invalid then
+                self.heldButtons[k] = nil
+            else
+                anyHeld = true
+            end
+        end
+        return anyHeld
+    end
+
+    local function isNonPrimaryOnPC0(pc0)
+        pc0 = pc0 or ue.getPlayerController(0)
         if not pc0 then
             return false, nil
         end
@@ -65,35 +95,35 @@ function Gamepad.new(ue)
         return true, pc0
     end
 
-    -- Hides the cursor of a controller driven by a gamepad-only player (PC1/PC2, or P2/P3 on PC0).
-    -- The cursor shape is set to None too: the game toggles bShowMouseCursor on its own in places
-    -- we don't hook, but it never touches CurrentMouseCursor.
-    local function hideCursor(pc)
+    local function setHardwareCursorVisible(pc, visible, cursorShape)
         if not ue.isValid(pc) then
             return
         end
         pcall(function()
-            pc.bShowMouseCursor = false
-            pc.CurrentMouseCursor = CURSOR_NONE
+            local desiredCursor = cursorShape ~= nil and cursorShape or (visible and CURSOR_DEFAULT or CURSOR_NONE)
+            if pc.bShowMouseCursor ~= visible then
+                pc.bShowMouseCursor = visible
+            end
+            if pc.CurrentMouseCursor ~= desiredCursor then
+                pc.CurrentMouseCursor = desiredCursor
+            end
         end)
     end
 
-    -- Player 1 on PC0 gets the game's own behaviour back: the default cursor shape (the game never
-    -- restores it after hideCursor) and the visibility the game last asked for. With a gamepad,
-    -- CommonUI's analog cursor hides it as in single player; with a mouse it stays usable, because
-    -- a native switch to MouseAndKeyboard can't be seen from Lua to restore it later.
-    local function showPrimaryCursor(pc0, visible)
-        if not ue.isValid(pc0) then
-            return
+    local function isPC0UsingGamepad(pc0, nonPrimary)
+        if nonPrimary then
+            return true
         end
-        pcall(function()
-            pc0.CurrentMouseCursor = CURSOR_DEFAULT
-            pc0.bShowMouseCursor = visible
-        end)
+        local sub = ue.getCommonInputSubsystem(pc0)
+        if not sub then
+            return false
+        end
+        local okGet, curType = pcall(function() return sub:GetCurrentInputType() end)
+        return okGet and curType == Roster.INPUT_TYPE_GAMEPAD
     end
 
     function self.resetButtonState()
-        self.heldButtons = 0
+        self.heldButtons = {}
         self.deferredRestore = false
     end
 
@@ -103,7 +133,7 @@ function Gamepad.new(ue)
         for idx = 1, Roster.MAX_PARTY_SLOTS - 1 do
             local pc = ue.getPlayerController(idx)
             if pc then
-                hideCursor(pc)
+                setHardwareCursorVisible(pc, false)
                 local sub = ue.getCommonInputSubsystem(pc)
                 if sub then
                     local okGet, curType = pcall(function() return sub:GetCurrentInputType() end)
@@ -121,9 +151,11 @@ function Gamepad.new(ue)
         end
     end
 
-    -- Applies cursor visibility after the game changed it (menuRequestedCursor = the value the game
-    -- just wrote, false to hide it during Rest) or after PC0 changed owner (nil: keep the last request).
-    -- P2/P3 on PC0 never see it; Player 1 gets what the game asked for.
+    -- Suppresses the blinking center-screen hardware cursor:
+    --   - Extra CoopControllers (PC1/PC2) stay in Gamepad mode with cursor hidden.
+    --   - Non-primary player (P2/P3) on PC0 always keeps hardware cursor hidden (None).
+    --   - Primary player (P1) on PC0 keeps CurrentMouseCursor = Default and follows menuWantsCursor
+    --     (hidden during SavePointRest / gameplay, visible in menus where CommonUI manages M&K vs Gamepad).
     function self.syncCursorVisibility(reason, menuRequestedCursor)
         if menuRequestedCursor ~= nil then
             self.menuWantsCursor = not not menuRequestedCursor
@@ -137,10 +169,10 @@ function Gamepad.new(ue)
         end
 
         if nonPrimary then
-            hideCursor(pc0)
-            Log.debug("Hid PC0 cursor for non-primary player (%s)", tostring(reason))
+            setHardwareCursorVisible(pc0, false, CURSOR_NONE)
+            Log.debug("Suppressed PC0 hardware cursor for non-primary user (%s)", tostring(reason))
         else
-            showPrimaryCursor(pc0, self.menuWantsCursor)
+            setHardwareCursorVisible(pc0, self.menuWantsCursor, CURSOR_DEFAULT)
         end
     end
 
@@ -152,22 +184,19 @@ function Gamepad.new(ue)
         self.syncCursorVisibility("map_ready", false)
     end
 
-    function self.ensureGamepadIfSafe(reason)
-        self.syncExtraControllersToGamepad(reason)
-
-        local nonPrimary, pc0 = isNonPrimaryOnPC0()
+    function self.ensureGamepadIfSafe(reason, pc0Override)
+        local nonPrimary, pc0 = isNonPrimaryOnPC0(pc0Override)
         if not nonPrimary or not pc0 then
             self.deferredRestore = false
             return false
         end
 
         -- Even while a button is held, hiding PC0's hardware cursor is safe and doesn't fire OnInputMethodChanged
-        hideCursor(pc0)
+        setHardwareCursorVisible(pc0, false, CURSOR_NONE)
 
-        if self.heldButtons > 0 then
+        if hasHeldButton() then
             self.deferredRestore = true
-            Log.debug("Deferring CommonUI Gamepad restore (%s): heldButtons=%d",
-                tostring(reason), self.heldButtons)
+            Log.debug("Deferring CommonUI Gamepad restore (%s): button held", tostring(reason))
             return false
         end
 
@@ -200,19 +229,51 @@ function Gamepad.new(ue)
         return false
     end
 
-    function self.onButtonPressed()
-        self.heldButtons = self.heldButtons + 1
+    -- Lightweight per-frame guard called from BP_jRPG_Controller_World::ReceiveTick.
+    -- Catches direct C++ FCommonInputPreprocessor drops to MouseAndKeyboard on the same frame
+    -- while strictly respecting held buttons so menu clicks are never canceled.
+    function self.onTick(pc0)
+        local nonPrimary, controller = isNonPrimaryOnPC0(pc0)
+        if not controller or not nonPrimary then
+            return
+        end
+        self.ensureGamepadIfSafe("tick", controller)
     end
 
-    function self.onButtonReleased()
-        if self.heldButtons > 0 then
-            self.heldButtons = self.heldButtons - 1
+    -- Called when entering a dialogue line/overlay: clear any stale held prompt button that opened it
+    -- so Confirm works immediately on the very first line.
+    function self.onDialoguePromptReady(reason)
+        self.resetButtonState()
+        self.syncExtraControllersToGamepad(reason)
+        self.ensureGamepadIfSafe(reason)
+    end
+
+    function self.onButtonPressed(btnObj)
+        local key = buttonKey(btnObj)
+        self.heldButtons[key] = { obj = btnObj, pressedAt = nowFn() }
+    end
+
+    function self.onButtonReleased(btnObj)
+        if btnObj ~= nil then
+            self.heldButtons[buttonKey(btnObj)] = nil
+        else
+            self.heldButtons = {}
         end
-        if self.heldButtons == 0 and self.deferredRestore then
-            self.ensureGamepadIfSafe("button_released_deferred")
-        elseif self.heldButtons == 0 then
-            -- Also repair quietly if inputType dropped to MouseAndKeyboard right before release
-            self.ensureGamepadIfSafe("button_released")
+        if not hasHeldButton() then
+            if self.deferredRestore then
+                self.ensureGamepadIfSafe("button_released_deferred")
+            else
+                self.ensureGamepadIfSafe("button_released")
+            end
+        end
+    end
+
+    function self.onButtonClicked(btnObj)
+        if btnObj ~= nil then
+            self.heldButtons[buttonKey(btnObj)] = nil
+        end
+        if not hasHeldButton() and self.deferredRestore then
+            self.ensureGamepadIfSafe("button_clicked_deferred")
         end
     end
 
@@ -233,7 +294,7 @@ function Gamepad.new(ue)
             if extraPc then
                 local extraSub = ue.getCommonInputSubsystem(extraPc)
                 if sameUObject(subObj, extraSub) then
-                    hideCursor(extraPc)
+                    setHardwareCursorVisible(extraPc, false)
                     if requested == Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD then
                         pcall(function()
                             newInputTypeParam:set(Roster.INPUT_TYPE_GAMEPAD)
@@ -256,26 +317,26 @@ function Gamepad.new(ue)
             return
         end
 
-        if not nonPrimary then
-            -- Player 1 (primary user) on PC0: CommonUI handles it as in single player
+        if nonPrimary then
+            setHardwareCursorVisible(pc0, false)
+            if requested ~= Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD then
+                return
+            end
+            if hasHeldButton() then
+                -- Do not interfere while a button is held; restore cleanly after release
+                self.deferredRestore = true
+                return
+            end
+            local okSet = pcall(function()
+                newInputTypeParam:set(Roster.INPUT_TYPE_GAMEPAD)
+            end)
+            if okSet then
+                Log.debug("Blocked PC0 CommonUI drop to MouseAndKeyboard while non-primary player owns PC0")
+            end
             return
         end
 
-        hideCursor(pc0)
-        if requested ~= Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD then
-            return
-        end
-        if self.heldButtons > 0 then
-            -- Do not interfere while a button is held; restore cleanly after release
-            self.deferredRestore = true
-            return
-        end
-        local okSet = pcall(function()
-            newInputTypeParam:set(Roster.INPUT_TYPE_GAMEPAD)
-        end)
-        if okSet then
-            Log.debug("Blocked PC0 CommonUI drop to MouseAndKeyboard while non-primary player owns PC0")
-        end
+        -- Player 1 (primary user) on PC0: leave input-type switches completely to CommonUI
     end
 
     return self

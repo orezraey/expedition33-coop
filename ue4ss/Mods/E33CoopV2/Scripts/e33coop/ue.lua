@@ -8,6 +8,7 @@ local Roster = require("e33coop.roster")
 local UE = {}
 
 local cache = {
+    activeWorld = nil,
     gameplayStatics = nil,
     inputDeviceLibrary = nil,
     subsystemLibrary = nil,
@@ -48,7 +49,40 @@ function UE.getGameplayStatics()
     return cache.gameplayStatics
 end
 
+-- Tracks the live UWorld from a known current-map actor (e.g. ModActor, Controller_World)
+-- so map transitions never accidentally query an outgoing/dying UWorld via FindFirstOf("World").
+function UE.setWorldContext(actorOrWorld)
+    if not isValid(actorOrWorld) then
+        return
+    end
+    local ok, w = pcall(function()
+        if actorOrWorld.GetWorld then
+            return actorOrWorld:GetWorld()
+        end
+        return actorOrWorld
+    end)
+    if ok and isValid(w) then
+        cache.activeWorld = w
+    end
+end
+
+function UE.clearWorldContext()
+    cache.activeWorld = nil
+end
+
 function UE.getWorld()
+    if isValid(cache.activeWorld) then
+        return cache.activeWorld
+    end
+    -- Prefer GameInstance->GetWorld() before FindFirstOf("World") to avoid stale worlds during travel
+    local okGi, gi = pcall(FindFirstOf, "GameInstance")
+    if okGi and isValid(gi) then
+        local okW, w = pcall(function() return gi:GetWorld() end)
+        if okW and isValid(w) then
+            cache.activeWorld = w
+            return w
+        end
+    end
     local ok, world = pcall(FindFirstOf, "World")
     if ok and isValid(world) then
         return world
@@ -116,57 +150,48 @@ function UE.getPrimaryPlatformUser()
 end
 
 function UE.getAllActiveUsers()
-    ensureStatics()
-    if not isValid(cache.inputDeviceLibrary) then
-        return {}
-    end
-    local ok, users = pcall(function()
-        local outUsers = {}
-        cache.inputDeviceLibrary:GetAllActiveUsers(outUsers)
-        local list = {}
-        -- UE4SS populates outUsers as a Lua table or TArray-like userdata
-        if type(outUsers) == "table" then
-            for i = 1, #outUsers do
-                local u = outUsers[i]
-                if u ~= nil then
-                    list[#list + 1] = {
-                        raw = u,
-                        internalId = u.InternalId,
-                    }
-                end
-            end
-        elseif outUsers and outUsers.ForEach then
-            outUsers:ForEach(function(_, elem)
-                local u = elem:get()
-                if u ~= nil then
-                    list[#list + 1] = {
-                        raw = u,
-                        internalId = u.InternalId,
-                    }
-                end
-            end)
-        end
-        return list
-    end)
-    if ok and type(users) == "table" and #users > 0 then
-        return users
-    end
-
-    -- Fallback: read platform users directly from active player controllers 0..2
-    local fallback = {}
+    -- 1. Prefer reading live PlatformUserIds from the current world's active PlayerControllers (PC0..PC2).
+    --    This is immune to UE4SS TArray out-param marshalling quirks and always reflects live controllers.
+    local users = {}
     local seen = {}
     for i = 0, Roster.MAX_PARTY_SLOTS - 1 do
         local pc = UE.getPlayerController(i)
         if pc then
             local okPc, u = pcall(function() return pc:GetPlatformUserId() end)
-            if okPc and u and u.InternalId ~= nil and not seen[u.InternalId] then
+            if okPc and u and type(u.InternalId) == "number" and not seen[u.InternalId] then
                 seen[u.InternalId] = true
-                fallback[#fallback + 1] = { raw = u, internalId = u.InternalId }
+                users[#users + 1] = { raw = u, internalId = u.InternalId }
             end
         end
     end
-    table.sort(fallback, function(a, b) return a.internalId < b.internalId end)
-    return fallback
+
+    -- 2. Supplement with InputDeviceLibrary::GetAllActiveUsers if available
+    ensureStatics()
+    if isValid(cache.inputDeviceLibrary) then
+        pcall(function()
+            local outParams = {}
+            cache.inputDeviceLibrary:GetAllActiveUsers(outParams)
+            local arr = outParams.OutUsers or outParams
+            local function collect(u)
+                if u ~= nil and type(u.InternalId) == "number" and not seen[u.InternalId] then
+                    seen[u.InternalId] = true
+                    users[#users + 1] = { raw = u, internalId = u.InternalId }
+                end
+            end
+            if type(arr) == "table" then
+                for i = 1, #arr do
+                    collect(arr[i])
+                end
+            elseif arr and arr.ForEach then
+                arr:ForEach(function(_, elem)
+                    collect(elem:get())
+                end)
+            end
+        end)
+    end
+
+    table.sort(users, function(a, b) return a.internalId < b.internalId end)
+    return users
 end
 
 function UE.findPlatformUserByInternalId(targetInternalId)
@@ -205,7 +230,7 @@ function UE.setController0User(targetInternalId, reason)
 
     local targetUser = UE.findPlatformUserByInternalId(targetInternalId)
     if not targetUser then
-        Log.warn("setController0User(%s): target user %s not found among active users",
+        Log.debug("setController0User(%s): user %s not yet among active controllers",
             tostring(reason), tostring(targetInternalId))
         return false
     end
