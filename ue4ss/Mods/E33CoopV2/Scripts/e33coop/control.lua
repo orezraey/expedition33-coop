@@ -1,0 +1,224 @@
+-- Unified PC0 ownership state machine.
+-- Replaces ControlRestorePatch's scattered splices, CDO hacks, and ReceiveTick polling
+-- with a single explicit state machine driven by game lifecycle events.
+
+local Log = require("e33coop.log")
+local Roster = require("e33coop.roster")
+
+local Control = {}
+
+function Control.new(ue, config, gamepad)
+    local self = {
+        -- PlatformUserId.InternalId of the player exploring outside battle (persists across map changes in Lua)
+        explorationUserId = nil,
+        inBattle = false,
+        battleEndState = Roster.BATTLE_END_NONE,
+        battleEndHandedOver = false,
+        -- PlatformUserId.InternalId that should currently own PC0 during an active battle
+        expectedBattleUserId = nil,
+    }
+
+    local function primaryId()
+        local _, id = ue.getPrimaryPlatformUser()
+        return id or 0
+    end
+
+    local function ensureExplorationUserInitialized()
+        if self.explorationUserId == nil then
+            local pc0 = ue.getPlayerController(0)
+            self.explorationUserId = ue.getPlatformUserId(pc0) or primaryId()
+        end
+        return self.explorationUserId
+    end
+
+    function self.isInBattle()
+        return self.inBattle
+    end
+
+    function self.getExplorationUserId()
+        return self.explorationUserId
+    end
+
+    -- Called once per map after ModActor::ReceiveBeginPlay finishes creating all CoopControllers.
+    function self.onMapReady()
+        self.inBattle = false
+        self.battleEndState = Roster.BATTLE_END_NONE
+        self.battleEndHandedOver = false
+        self.expectedBattleUserId = nil
+        gamepad.resetButtonState()
+
+        if self.explorationUserId ~= nil then
+            Log.info("Map ready: restoring exploration control to user %s", tostring(self.explorationUserId))
+            ue.setController0User(self.explorationUserId, "map_ready")
+            gamepad.ensureGamepadIfSafe("map_ready")
+        else
+            ensureExplorationUserInitialized()
+        end
+    end
+
+    -- Called when BP_jRPG_Controller_World::PrepareToChangeMap runs.
+    -- During exploration, capture the current explorer; during battle (e.g. game over reload),
+    -- keep the exploration user saved when the battle began.
+    function self.onPrepareToChangeMap()
+        if not self.inBattle then
+            local pc0 = ue.getPlayerController(0)
+            local current = ue.getPlatformUserId(pc0)
+            if current ~= nil then
+                self.explorationUserId = current
+            end
+        end
+        Log.info("Map changing (inBattle=%s): preserving exploration user %s",
+            tostring(self.inBattle), tostring(self.explorationUserId))
+        self.inBattle = false
+        self.battleEndState = Roster.BATTLE_END_NONE
+        self.battleEndHandedOver = false
+        self.expectedBattleUserId = nil
+        gamepad.resetButtonState()
+    end
+
+    -- Called POST after CoopController handles START (Gamepad_Special_Right).
+    -- In exploration or on Victory/Flee screens, accept the takeover and update explorationUserId.
+    -- During active battle, optionally undo accidental takeover so defense routing stays intact.
+    function self.onStartTakeover()
+        local pc0 = ue.getPlayerController(0)
+        if not pc0 then
+            return
+        end
+
+        if self.inBattle and not self.battleEndHandedOver and config.shouldBlockStartInBattle() then
+            local restoreTo = self.expectedBattleUserId or primaryId()
+            Log.info("Blocked START takeover during active battle; keeping PC0 on user %s", tostring(restoreTo))
+            ue.setController0User(restoreTo, "block_start_in_battle")
+            return
+        end
+
+        local newOwner = ue.getPlatformUserId(pc0)
+        if newOwner ~= nil then
+            self.explorationUserId = newOwner
+            Log.info("START takeover accepted: exploration user is now %s", tostring(newOwner))
+            gamepad.ensureGamepadIfSafe("start_takeover")
+        end
+    end
+
+    -- Called when BP_jRPG_Controller_World::OnBattleBeginTransitionRequested runs.
+    -- Guarded by `not self.inBattle` so chained battles keep the pre-battle exploration user.
+    function self.onBattleBegin()
+        if self.inBattle then
+            Log.debug("Chained battle transition detected; preserving exploration user %s",
+                tostring(self.explorationUserId))
+            return
+        end
+
+        local pc0 = ue.getPlayerController(0)
+        local current = ue.getPlatformUserId(pc0)
+        if current ~= nil then
+            self.explorationUserId = current
+        else
+            ensureExplorationUserInitialized()
+        end
+
+        self.inBattle = true
+        self.battleEndState = Roster.BATTLE_END_NONE
+        self.battleEndHandedOver = false
+
+        -- Reset stale BattleEndState from any previous battle
+        local bm = ue.getBattleManager()
+        if bm then
+            pcall(function() bm.BattleEndState = Roster.BATTLE_END_NONE end)
+        end
+
+        config.rollForBattle()
+
+        -- Hand PC0 to PrimaryUser right away: if enemies act first, P1's characters defend via PC0
+        -- while P2/P3 defend via CoopController.
+        local p1 = primaryId()
+        self.expectedBattleUserId = p1
+        ue.setController0User(p1, "battle_begin")
+        Log.info("Battle began: saved exploration user=%s, handed PC0 to primary user=%s",
+            tostring(self.explorationUserId), tostring(p1))
+    end
+
+    -- Called when a player character's turn starts.
+    function self.onPlayerTurnStart(targetUserId, playerIndex, charId)
+        if not self.inBattle then
+            -- Defensive recovery if we missed OnBattleBeginTransitionRequested (e.g. hot reload mid-battle)
+            self.inBattle = true
+            ensureExplorationUserInitialized()
+        end
+        if self.battleEndHandedOver then
+            return
+        end
+        self.expectedBattleUserId = targetUserId
+        ue.setController0User(targetUserId, "player_turn:" .. tostring(charId))
+        gamepad.ensureGamepadIfSafe("player_turn")
+    end
+
+    -- Called when an enemy character's turn starts.
+    -- Guarantees PC0 is on PrimaryUser even if a player turn ended without firing OnTurnEnded.
+    function self.onEnemyTurnStart()
+        if not self.inBattle or self.battleEndHandedOver then
+            return
+        end
+        local p1 = primaryId()
+        self.expectedBattleUserId = p1
+        ue.setController0User(p1, "enemy_turn")
+    end
+
+    -- Called POST after BP_jRPG_Character_Battle_Base::OnTurnEnded runs.
+    -- The unpatched mod always resets PC0 to PrimaryUser in OnTurnEnded; if the battle has
+    -- already ended or handed over to Victory/Flee, immediately restore the exploration user.
+    function self.onTurnEnded(isPlayerCharacter)
+        if not isPlayerCharacter then
+            return
+        end
+        if (not self.inBattle) or self.battleEndHandedOver then
+            local target = ensureExplorationUserInitialized()
+            ue.setController0User(target, "late_turn_end_restore")
+            gamepad.ensureGamepadIfSafe("late_turn_end_restore")
+        else
+            self.expectedBattleUserId = primaryId()
+        end
+    end
+
+    -- Event-driven Victory / Flee handover via AC_jRPG_BattleManager::StartBattleEndFlow.
+    -- One-shot: hands PC0 to the exploration user once, without fighting START on every tick.
+    function self.onBattleEndFlowStarted(resultByte)
+        self.battleEndState = resultByte or Roster.BATTLE_END_NONE
+        if self.battleEndState == Roster.BATTLE_END_WON or self.battleEndState == Roster.BATTLE_END_FLED then
+            if not self.battleEndHandedOver then
+                self.battleEndHandedOver = true
+                local target = ensureExplorationUserInitialized()
+                Log.info("Battle end flow (%d): handing Victory/Flee screen to user %s",
+                    self.battleEndState, tostring(target))
+                ue.setController0User(target, "battle_end_flow")
+                gamepad.ensureGamepadIfSafe("battle_end_flow")
+            end
+        elseif self.battleEndState == Roster.BATTLE_END_LOST then
+            -- Keep PrimaryUser on Game Over / Reserve Team screen
+            local p1 = primaryId()
+            self.expectedBattleUserId = p1
+            ue.setController0User(p1, "battle_lost_flow")
+        end
+    end
+
+    -- Called POST after BP_jRPG_Controller_World::ResumeExplorationOnBattleEnd runs.
+    function self.onBattleEnd(resultByte)
+        if resultByte == Roster.BATTLE_END_LOST then
+            config.markRetryKeepRoll()
+        end
+        self.inBattle = false
+        self.battleEndState = Roster.BATTLE_END_NONE
+        self.battleEndHandedOver = false
+        self.expectedBattleUserId = nil
+
+        local target = ensureExplorationUserInitialized()
+        Log.info("Battle ended (result=%s): restoring exploration user %s",
+            tostring(resultByte), tostring(target))
+        ue.setController0User(target, "battle_end")
+        gamepad.ensureGamepadIfSafe("battle_end")
+    end
+
+    return self
+end
+
+return Control
