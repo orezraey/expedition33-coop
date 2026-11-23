@@ -1,51 +1,108 @@
-﻿# Expedition 33: Clair Obscur - Coop (v2 Hybrid Architecture)
+﻿# Expedition 33: Clair Obscur - Coop (v2)
 
 For those who come after, with your friends!
 
 ![](./docs/header_s.jpg)
 
-## Architecture (v2 Rewrite)
+[Leia em português](./README.pt-BR.md)
 
-This rewrite replaces all fragile Kismet bytecode patching (`*Patch.cs`) with a **hybrid architecture**:
+This is a fork of [Kouzukii/expedition33-coop](https://github.com/Kouzukii/expedition33-coop). It keeps the original mod's
+assets untouched and adds a [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) Lua mod, `E33CoopV2`, that fixes a number of
+co-op problems and adds per-character settings. Tested with game version 1.5, the original mod's v0.9.6 files and a
+UE4SS development build from October 2026.
 
-1. **Base `.utoc` assets (unpatched upstream Kouzukii mod)** provide the Unreal widgets (`UserSwitchWidget`, `PlayerIndicator`), `CoopController` input bindings, `ModActor`, and base hooks.
-2. **UE4SS Lua Runtime (`ue4ss/Mods/E33CoopV2`)** owns all state, character-first mapping, control transitions, UI customization, and CommonUI gamepad fixes — with zero bytecode splicing and zero tick-polling wars.
+## How it works
 
-### Modules (`ue4ss/Mods/E33CoopV2/Scripts/e33coop/`)
+- During battles each player controls their own characters, including parrying and choosing actions.
+- During exploration Player 1 has control by default, but any player can take over by pressing START (useful for
+  leveling and choosing equipment for your own characters).
 
-| Module | Responsibility |
-| --- | --- |
-| `roster.lua` | Canonical playable character list (`Frey`/Gustave, `Lune`, `Maelle`, `Sciel`, `Monoco`, `Verso`) and game enum constants |
-| `config.lua` | Single source of truth for per-character assignments persisted in `config.json`, v1 SaveGame migration, and independent per-character 6-bit battle random rolls + Retry keep-roll |
-| `ue.lua` | Safe game-thread UE4SS wrappers, party/battle queries, and 3-player-safe `setController0User` |
-| `battle.lua` | Character-first projection from actual spawned battle actors (spots `0..2`) directly into `ModActor.CoopConfig`, handling normal parties, `OverrideParty` (1–3 chars), and Reserve/Backup teams, plus turn toasts |
-| `control.lua` | Unified `PC0` ownership state machine: exploration restore after battle & map changes, optional `START` guard during active battle, enemy-turn P1 defense reset, and one-shot event-driven Victory/Flee handover (`StartBattleEndFlow`) |
-| `ui.lua` | Settings menu enhancement (`Random (P1/P2)` option, slot character labels, descriptions) and Team Screen `PlayerIndicator` (`P1`/`P2`/`P3`/`P?`) |
-| `gamepad.lua` | Click-safe CommonUI Gamepad mode protection for non-primary players (tracks `HandleButtonPressed`/`Released` so menu clicks are never canceled; covers dialogues, choices, and fullscreen notifications like Relationship Up) |
-| `hooks.lua` | Deadlock-free game-thread-only hook manager (no `LoopAsync` / `ExecuteInGameThread`, lazy Blueprint hook registration) |
+### Playing with friends remotely
 
-## Features
+Steam only offers "Remote Play Together" for games with built-in co-op, but you can use
+[RemotePlayWhatever](https://github.com/m4dEngi/RemotePlayWhatever) as a workaround.
 
-- **Per-character assignments**: Settings remember the player assigned to each character (following them across party swaps, `OverrideParty`, and Reserve Teams). Unassigned characters default to Player 1 once any choice is saved.
-- **Random (P1/P2) mode**: Assign any character to `Random (P1/P2)`. Each character rolls independently at battle start and keeps the same roll if you **Retry** a lost battle.
-- **Turn indicator toast**: Shows `"Player N's Turn (Character)"` using `UserSwitchWidget` at the start of every player turn.
-- **Exploration control persistence**: Whoever was exploring keeps control across map transitions, Victory/Flee screens, and after battles end.
-- **Enemy-turn defense safety**: Always hands `PC0` back to Player 1 on every enemy turn and optionally blocks accidental `START` presses mid-battle.
-- **Click-safe CommonUI Gamepad support**: Keeps Player 2 / Player 3 in Gamepad mode for dialogues, choices, menus, and fullscreen popups without canceling held button clicks or interfering with Player 1's mouse & keyboard.
+## What is different from the original mod
+
+The original mod is a set of Unreal assets (`expedition33_coop_P.pak/.ucas/.utoc`). This fork uses those assets as
+they are and adds a UE4SS Lua mod on top; nothing in the original files is patched.
+
+### Settings and battles
+
+- **Players are assigned per character, not per party slot.** In the original, Settings has "Character 1/2/3
+  Assignment", tied to the party slot, so swapping the party order or a solo battle (e.g. the Sirène fight with only
+  Maelle) gives the turn to the wrong player. Here each character remembers its player and keeps it across party
+  swaps, solo battles and the reserve team. Once any choice is saved, characters nobody assigned go to Player 1.
+- **`Random (P1/P2)` option.** Each character with this option rolls its player at the start of each battle and keeps
+  the same roll when you retry a lost battle.
+- **Turn indicator.** A "Player N's Turn (Character)" message appears at the start of each player turn.
+- **Team screen badges.** The team screen shows `P1`/`P2`/`P3` next to each character.
+- **Accidental START during battle is blocked** (optional), so a stray press doesn't take controller 0 in the middle
+  of a fight. START still works during exploration and on the Victory/Flee screens.
+- **Enemy turns always start with controller 0 back on Player 1**, so the base mod's defense routing starts from the
+  same state every enemy turn.
+
+### Exploration control
+
+- **Whoever is exploring keeps control** after battles, on the Victory/Flee screens and across map changes. In the
+  original, control could go back to Player 1 after changing maps.
+- If that player's controller does not come back within 10 seconds after a map change (e.g. the pad was unplugged),
+  control goes back to Player 1 and a warning is written to the log.
+
+### Controllers, menus and dialogues for Player 2/3
+
+- **Player 2/3 can advance dialogues with A.** In the original, dialogue lines could only be skipped by Player 1
+  when Player 2 was exploring.
+- **Player 2/3 can close fullscreen notifications** shown after dialogues (relationship level up, new gradient attack,
+  etc.) with A.
+- **Player 2/3 can answer confirmation popups** with A (confirm) and B (cancel). Hold-to-confirm popups still need
+  Player 1.
+- **The game stays in gamepad mode for Player 2/3**: no keyboard icons appearing in dialogues, and button presses in
+  menus are never cancelled by the mod's own input-mode fixes.
+
+### Mouse cursor
+
+- **No more blinking cursor in the middle of the screen** when resting at an Expedition Flag or opening menus.
+- The cursor is always hidden while Player 2/3 control the game and for the extra controllers; Player 1 keeps the
+  game's normal mouse behaviour.
+
+### Settings file
+
+- Options live in `ue4ss\Mods\E33CoopV2\config.json` (see [Configuration](#configuration)). Per-slot choices from the
+  original mod's save are imported on the first run.
 
 ## Installation
 
-1. Install the **unpatched** base `expedition33_coop_P.{pak,ucas,utoc}` into `..\Expedition 33\Sandfall\Content\Paks\~mods`.
-2. Install [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) into `..\Expedition 33\Sandfall\Binaries\Win64\`.
-3. Run the installer script:
+You need three things: the original co-op mod, UE4SS and `E33CoopV2`.
+
+1. **Original co-op mod**: download the latest release of
+   [Kouzukii/expedition33-coop](https://github.com/Kouzukii/expedition33-coop/releases) and unzip
+   `expedition33_coop_P.pak/.ucas/.utoc` into `..\Expedition 33\Sandfall\Content\Paks\~mods` (create `~mods` if it
+   doesn't exist).
+2. **UE4SS**: install [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS/releases) into
+   `..\Expedition 33\Sandfall\Binaries\Win64\`. The game uses Unreal Engine 5.4, which the old stable v3.0.1
+   (2024) may not support: use v4.0.0 or newer. This mod was tested with a development build from October 2026
+   (commit `cdbc0b66`, shown as "v3.0.1 Beta" in `UE4SS.log`); v4.0.0 itself has not been tested yet.
+3. **E33CoopV2**: download `E33CoopV2-<version>.zip` from this fork's
+   [Releases](https://github.com/orezraey/expedition33-coop/releases) and copy the `ue4ss\Mods\E33CoopV2` folder into
+   `..\Expedition 33\Sandfall\Binaries\Win64\ue4ss\Mods\`. The mod is enabled by its own `enabled.txt`.
+
+   Or run the installer from the unzipped folder. It copies the scripts, keeps your `config.json` and adds
+   `E33CoopV2 : 1` to `mods.txt`:
+
    ```powershell
-   .\scripts\Install-CoopV2.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Expedition 33"
+   powershell -ExecutionPolicy Bypass -File .\scripts\Install-CoopV2.ps1 -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Expedition 33"
    ```
-   If you previously installed a v1 bytecode-patched `.utoc`, pass `-BasePakDir "<folder with unpatched expedition33_coop_P.*>"` to restore the clean base assets automatically.
 
-## Configuration (`Mods/E33CoopV2/config.json`)
+   `-BasePakDir "<folder with the original expedition33_coop_P.*>"` also copies the original mod's files into
+   `~mods`.
 
-Created automatically on first run. The per-slot `Character 1/2/3 Assignment` values of an existing `"Coop"` SaveGame are imported as `legacySlots`. Per-character choices saved by a v1 bytecode-patched `.utoc` are only imported if that patched `.utoc` is still installed on the first run: the unpatched base `CoopConfig` has no fields for them, so otherwise pick them again in Settings.
+To update, replace the `Scripts` folder (or run the installer again). Your `config.json` is kept.
+
+## Configuration
+
+`..\Win64\ue4ss\Mods\E33CoopV2\config.json` is created on the first run. Player assignments are changed in the game's
+Settings menu; the other options are edited in the file.
 
 ```json
 {
@@ -63,10 +120,63 @@ Created automatically on first run. The per-slot `Character 1/2/3 Assignment` va
 }
 ```
 
-- `debug`: set to `true` to enable verbose `[E33CoopV2] [DEBUG]` logs in `UE4SS.log`.
-- `blockStartInBattle`: prevents accidental `START` presses during active combat from stealing `PC0` (still allowed during exploration and on Victory/Flee screens).
-- `showTurnToast`: toggles the `"Player N's Turn (Character)"` toast at player turn start.
+- `assignments`: player per character (`0` = Player 1, `1` = Player 2, `2` = Player 3, `3` = Random (P1/P2)).
+- `blockStartInBattle`: block START from taking controller 0 during an active battle.
+- `showTurnToast`: show the "Player N's Turn (Character)" message.
+- `debug`: write detailed `[E33CoopV2] [DEBUG]` lines to `..\Win64\ue4ss\UE4SS.log`.
+- `legacySlots`: the per-slot assignment imported from the original mod's save. It is used per party slot until you
+  save a choice in Settings; from then on every character has its own entry in `assignments`.
 
-## Building the Base Assets (Upstream Reference)
+The per-slot "Character 1/2/3 Assignment" values of an existing `Coop` save are imported as `legacySlots`.
 
-The base Unreal assets under `./Sandfall` and `./Program.cs` remain untouched from upstream `6038f67`. See the original upstream instructions if you ever need to rebuild the base `.utoc` in Unreal Engine 5.4.
+## Issues
+
+If something goes wrong, set `"debug": true` in `config.json`, reproduce it and open an issue with an exact
+description and `..\Win64\ue4ss\UE4SS.log` attached.
+
+### Known issues
+
+- Press & hold actions in menus (Learn Skill, Upgrade Attributes, Level Weapon, hold-to-confirm popups) can only be
+  done by Player 1, as in the original mod.
+
+## For developers
+
+### E33CoopV2 (Lua)
+
+The mod lives in `ue4ss/Mods/E33CoopV2/Scripts`:
+
+| Module | Responsibility |
+| --- | --- |
+| `main.lua` | Registers the hooks and wires the modules together |
+| `roster.lua` | Playable characters (`Frey`/Gustave, `Lune`, `Maelle`, `Sciel`, `Monoco`, `Verso`) and game enum constants |
+| `config.lua` | Per-character assignments in `config.json`, save migration, random rolls and Retry keep-roll |
+| `ue.lua` | Safe UE4SS wrappers: party/battle queries, controller 0 user switching, dialogue/notification/popup lookups |
+| `battle.lua` | Projects per-character assignments into the base mod's `CoopConfig` from the characters actually spawned in battle |
+| `control.lua` | Controller 0 ownership: exploration restore after battles and map changes, START guard, enemy-turn reset, Victory/Flee handover |
+| `gamepad.lua` | Gamepad mode for Player 2/3, A/B for dialogues, notifications and popups, mouse cursor handling |
+| `ui.lua` | Settings menu options and Team screen `P1`/`P2`/`P3` badges |
+| `hooks.lua` | Hook registration on the game thread, with lazy registration for Blueprint functions loaded later |
+
+Run the offline tests with any Lua 5.4 interpreter:
+
+```powershell
+lua tests\run_tests.lua
+```
+
+### Base assets (original mod)
+
+The Unreal assets under `./Sandfall` and `./Program.cs` are unchanged from upstream `6038f67`. To rebuild them:
+
+- Clone the repository with its submodules: `git clone https://github.com/orezraey/expedition33-coop.git --recurse-submodules`
+- Download [retoc](https://github.com/trumank/retoc) into the project root folder.
+- Extract the game's assets into the `./Export` folder
+  ```
+  .\retoc.exe to-legacy "GAMEPATH\Expedition 33\Sandfall\Content\Paks" ".\Export"
+  ```
+- Start Unreal Engine 5.4 and open `./Sandfall/Sandfall.uproject`
+- Package the project with the Shipping configuration under the `./Sandfall` directory (Such that `./Sandfall/Windows/Sandfall/Sandfall.exe` is created)
+- Build the mod using `dotnet run --project Expedition33Coop.csproj` (.NET 10 SDK is required)
+
+## Credits
+
+Original mod by [Kouzukii](https://github.com/Kouzukii/expedition33-coop). MIT License, see [LICENSE](./LICENSE).
