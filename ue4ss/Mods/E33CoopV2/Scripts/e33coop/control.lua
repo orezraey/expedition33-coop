@@ -31,6 +31,12 @@ function Control.new(ue, config, gamepad)
         return self.explorationUserId
     end
 
+    -- Every PC0 owner change also re-applies the cursor: hidden for P2/P3, the game's own for P1.
+    local function setPC0(targetUserId, reason)
+        ue.setController0User(targetUserId, reason)
+        gamepad.syncCursorVisibility(reason)
+    end
+
     function self.isInBattle()
         return self.inBattle
     end
@@ -49,7 +55,7 @@ function Control.new(ue, config, gamepad)
 
         if self.explorationUserId ~= nil then
             Log.info("Map ready: restoring exploration control to user %s", tostring(self.explorationUserId))
-            ue.setController0User(self.explorationUserId, "map_ready")
+            setPC0(self.explorationUserId, "map_ready")
         else
             ensureExplorationUserInitialized()
         end
@@ -82,7 +88,7 @@ function Control.new(ue, config, gamepad)
         if self.inBattle and not self.battleEndHandedOver and config.shouldBlockStartInBattle() then
             local restoreTo = self.expectedBattleUserId or primaryId()
             Log.info("Blocked START takeover during active battle; keeping PC0 on user %s", tostring(restoreTo))
-            ue.setController0User(restoreTo, "block_start_in_battle")
+            setPC0(restoreTo, "block_start_in_battle")
             return
         end
 
@@ -91,6 +97,7 @@ function Control.new(ue, config, gamepad)
             self.explorationUserId = newOwner
             Log.info("START takeover accepted: exploration user is now %s", tostring(newOwner))
             gamepad.ensureGamepadIfSafe("start_takeover")
+            gamepad.syncCursorVisibility("start_takeover")
         end
     end
 
@@ -127,7 +134,7 @@ function Control.new(ue, config, gamepad)
         -- while P2/P3 defend via CoopController.
         local p1 = primaryId()
         self.expectedBattleUserId = p1
-        ue.setController0User(p1, "battle_begin")
+        setPC0(p1, "battle_begin")
         Log.info("Battle began: saved exploration user=%s, handed PC0 to primary user=%s",
             tostring(self.explorationUserId), tostring(p1))
     end
@@ -143,7 +150,7 @@ function Control.new(ue, config, gamepad)
             return
         end
         self.expectedBattleUserId = targetUserId
-        ue.setController0User(targetUserId, "player_turn:" .. tostring(charId))
+        setPC0(targetUserId, "player_turn:" .. tostring(charId))
         gamepad.ensureGamepadIfSafe("player_turn")
     end
 
@@ -155,7 +162,7 @@ function Control.new(ue, config, gamepad)
         end
         local p1 = primaryId()
         self.expectedBattleUserId = p1
-        ue.setController0User(p1, "enemy_turn")
+        setPC0(p1, "enemy_turn")
     end
 
     -- Called POST after BP_jRPG_Character_Battle_Base::OnTurnEnded runs.
@@ -167,10 +174,12 @@ function Control.new(ue, config, gamepad)
         end
         if (not self.inBattle) or self.battleEndHandedOver then
             local target = ensureExplorationUserInitialized()
-            ue.setController0User(target, "late_turn_end_restore")
+            setPC0(target, "late_turn_end_restore")
             gamepad.ensureGamepadIfSafe("late_turn_end_restore")
         else
+            -- the base mod just handed PC0 back to PrimaryUser
             self.expectedBattleUserId = primaryId()
+            gamepad.syncCursorVisibility("turn_ended")
         end
     end
 
@@ -184,14 +193,14 @@ function Control.new(ue, config, gamepad)
                 local target = ensureExplorationUserInitialized()
                 Log.info("Battle end flow (%d): handing Victory/Flee screen to user %s",
                     self.battleEndState, tostring(target))
-                ue.setController0User(target, "battle_end_flow")
+                setPC0(target, "battle_end_flow")
                 gamepad.ensureGamepadIfSafe("battle_end_flow")
             end
         elseif self.battleEndState == Roster.BATTLE_END_LOST then
             -- Keep PrimaryUser on Game Over / Reserve Team screen
             local p1 = primaryId()
             self.expectedBattleUserId = p1
-            ue.setController0User(p1, "battle_lost_flow")
+            setPC0(p1, "battle_lost_flow")
         end
     end
 
@@ -208,7 +217,7 @@ function Control.new(ue, config, gamepad)
         local target = ensureExplorationUserInitialized()
         Log.info("Battle ended (result=%s): restoring exploration user %s",
             tostring(resultByte), tostring(target))
-        ue.setController0User(target, "battle_end")
+        setPC0(target, "battle_end")
         gamepad.ensureGamepadIfSafe("battle_end")
     end
 

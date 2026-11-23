@@ -191,6 +191,11 @@ hooks.addBlueprint("/Game/UI/Widgets/HUD_Exploration/WBP_SavePointMenu.WBP_SaveP
     gamepad.syncCursorVisibility("SavePointRest", false)
 end, true)
 
+-- The Flag menu coming back after Rest: the game's bShowMouseCursor was still true, show it again
+hooks.addBlueprint("/Game/UI/Widgets/HUD_Exploration/WBP_SavePointMenu.WBP_SavePointMenu_C:BP_OnActivated", function()
+    gamepad.syncCursorVisibility("SavePointActivated", true)
+end, true)
+
 hooks.addBlueprint("/Game/UI/Widgets/HUD_Exploration/WBP_SavePointMenu.WBP_SavePointMenu_C:BP_OnDeactivated", function()
     gamepad.syncCursorVisibility("SavePointDeactivated", nil)
 end, true)

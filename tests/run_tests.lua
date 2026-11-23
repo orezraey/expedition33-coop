@@ -440,27 +440,33 @@ runTest("gamepad: suppresses center-screen cursor blink on Flag/Rest and locks P
     gp.onSetCurrentInputTypePre(ue.sub2, pc2Drop)
     assertEq(pc2Drop:get(), Roster.INPUT_TYPE_GAMEPAD, "PC2 MouseAndKeyboard drop blocked")
 
-    -- Opening Expedition Flag sets PC0.bShowMouseCursor = true, but on Gamepad we suppress it immediately
-    ue.state.pc0User = 0
-    ue.state.inputType = Roster.INPUT_TYPE_GAMEPAD
+    -- Player 2 owns PC0 and opens the Expedition Flag: the game sets bShowMouseCursor = true, we hide it
+    ue.state.pc0User = 1
     ue.pc0.bShowMouseCursor = true
-    ue.pc0.CurrentMouseCursor = 1
     gp.syncCursorVisibility("OpenSavePointMenu", true)
-    assertEq(ue.pc0.bShowMouseCursor, false, "PC0 cursor hidden on Flag in Gamepad mode")
-    assertEq(ue.pc0.CurrentMouseCursor, 0, "PC0 CurrentMouseCursor set to None")
+    assertEq(ue.pc0.bShowMouseCursor, false, "P2 on PC0: cursor hidden on Flag")
+    assertEq(ue.pc0.CurrentMouseCursor, 0, "P2 on PC0: CurrentMouseCursor None")
 
-    -- If Player 1 intentionally moves the mouse while Flag menu is open, cursor is restored
+    -- PC0 goes back to Player 1 inside the menu: the game's cursor comes back, shape included
+    ue.state.pc0User = 0
+    gp.syncCursorVisibility("start_takeover")
+    assertEq(ue.pc0.bShowMouseCursor, true, "P1 gets the menu cursor back")
+    assertEq(ue.pc0.CurrentMouseCursor, 1, "P1 CurrentMouseCursor restored to Default")
+
+    -- Player 1 rests: the menu is gone but the game leaves bShowMouseCursor = true -> hidden during Rest
+    gp.syncCursorVisibility("SavePointRest", false)
+    assertEq(ue.pc0.bShowMouseCursor, false, "P1 cursor hidden during Rest")
+    assertEq(ue.pc0.CurrentMouseCursor, 1, "P1 cursor shape never left at None")
+    gp.syncCursorVisibility("SavePointActivated", true)
+    assertEq(ue.pc0.bShowMouseCursor, true, "P1 cursor back when the Flag menu returns")
+
+    -- Player 1's own input type switches are left to CommonUI (a native switch can't be seen from Lua)
+    local p1Pad = makeParam(Roster.INPUT_TYPE_GAMEPAD)
+    gp.onSetCurrentInputTypePre(ue.sub, p1Pad)
+    assertEq(ue.pc0.bShowMouseCursor, true, "P1 cursor untouched by input type switches")
     local p1Mouse = makeParam(Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD)
     gp.onSetCurrentInputTypePre(ue.sub, p1Mouse)
     assertEq(p1Mouse:get(), Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD, "P1 M&K still allowed")
-    assertEq(ue.pc0.bShowMouseCursor, true, "P1 cursor restored when switching to M&K in menu")
-    assertEq(ue.pc0.CurrentMouseCursor, 1, "P1 CurrentMouseCursor restored to Default")
-
-    -- Switching back to Gamepad hides it again immediately
-    local p1Pad = makeParam(Roster.INPUT_TYPE_GAMEPAD)
-    gp.onSetCurrentInputTypePre(ue.sub, p1Pad)
-    assertEq(ue.pc0.bShowMouseCursor, false, "P1 cursor hidden again on Gamepad")
-    assertEq(ue.pc0.CurrentMouseCursor, 0, "P1 CurrentMouseCursor None again on Gamepad")
 end)
 
 runTest("ui: Settings menu labels/random option, save sanitization, and PlayerIndicator badges", function()
