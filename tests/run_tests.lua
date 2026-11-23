@@ -158,6 +158,19 @@ local function makeMockUE()
             if pc == pc2 then return sub2 end
             return nil
         end,
+        isGamepadKeyPressed = function()
+            return state.confirmJustPressed == true, state.confirmDown == true
+        end,
+        getActiveDialogueWaitingForConfirm = function()
+            if state.dialogueWaiting then
+                return state.dialogueComp, state.confirmWidget, state.dialogueHasChoices == true
+            end
+            return nil, nil, false
+        end,
+        advanceDialogueLine = function()
+            state.dialogueAdvances = (state.dialogueAdvances or 0) + 1
+            return true
+        end,
         spawnTurnToast = function(text) state.toasts[#state.toasts + 1] = text; return true end,
     }
 
@@ -583,6 +596,50 @@ runTest("control: deferred map restore retries on SetupCoopController / tick unt
     pc1Spawned = true
     ctrl.onCoopControllerReady()
     assertEq(ue.state.pc0User, 1, "restored to user 1 as soon as CoopController exists")
+end)
+
+runTest("gamepad: advances P2 dialogue line directly on A press without skipping choices or double-firing", function()
+    local ue = makeMockUE()
+    local fakeTime = 10.0
+    local gp = Gamepad.new(ue, function() return fakeTime end)
+    ue.state.pc0User = 1
+    ue.state.dialogueWaiting = true
+    ue.state.dialogueComp = {}
+    ue.state.confirmWidget = {}
+    ue.state.dialogueHasChoices = false
+    ue.state.dialogueAdvances = 0
+
+    -- Holding A from interaction prompt when dialogue opens must NOT immediately skip line 1
+    ue.state.confirmDown = true
+    ue.state.confirmJustPressed = false
+    gp.onDialoguePromptReady("dialogue_line")
+    fakeTime = 10.2
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.dialogueAdvances, 0, "held A from interaction prompt does not skip line 1")
+
+    -- Release A, then press A -> advances dialogue line once
+    ue.state.confirmDown = false
+    gp.onTick(ue.pc0)
+    ue.state.confirmDown = true
+    ue.state.confirmJustPressed = true
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.dialogueAdvances, 1, "fresh A press advances dialogue line")
+
+    -- Holding A next frame does not double-advance
+    ue.state.confirmJustPressed = false
+    fakeTime = 10.5
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.dialogueAdvances, 1, "holding A does not double-advance")
+
+    -- When dialogue choices are showing, never bypass choice selection
+    ue.state.confirmDown = false
+    gp.onTick(ue.pc0)
+    ue.state.dialogueHasChoices = true
+    ue.state.confirmDown = true
+    ue.state.confirmJustPressed = true
+    fakeTime = 11.0
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.dialogueAdvances, 1, "does not fire OnNextClicked while choices are showing")
 end)
 
 print(string.format("\nResults: %d passed, %d failed", passed, failed))

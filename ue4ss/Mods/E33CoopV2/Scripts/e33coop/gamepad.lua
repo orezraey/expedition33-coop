@@ -41,6 +41,10 @@ function Gamepad.new(ue, clockFn)
         menuWantsCursor = false,
         -- Guards against re-entrant SetCurrentInputType hook calls triggered by us
         suppressHook = false,
+        loggedFirstTick = false,
+        -- Edge-detection for Gamepad_FaceButton_Bottom (A) to advance dialogue lines for non-primary users
+        wasConfirmDown = false,
+        lastDialogueAdvanceAt = 0,
     }
 
     local function sameUObject(a, b)
@@ -232,25 +236,79 @@ function Gamepad.new(ue, clockFn)
     -- Lightweight per-frame guard called from BP_jRPG_Controller_World::ReceiveTick.
     -- Catches direct C++ FCommonInputPreprocessor drops to MouseAndKeyboard on the same frame
     -- while strictly respecting held buttons so menu clicks are never canceled.
+    local function handleNonPrimaryDialogueConfirm(controller)
+        local justPressed, isDown = ue.isGamepadKeyPressed(controller, "Gamepad_FaceButton_Bottom")
+        local risingEdge = justPressed or (isDown and not self.wasConfirmDown)
+        self.wasConfirmDown = isDown
+        if not risingEdge then
+            return false
+        end
+
+        local now = nowFn()
+        if (now - self.lastDialogueAdvanceAt) < 0.15 then
+            return false
+        end
+
+        local dlgComp, confirmWidget, hasChoices = ue.getActiveDialogueWaitingForConfirm(controller)
+        if not dlgComp or hasChoices then
+            return false
+        end
+
+        if ue.advanceDialogueLine(dlgComp, confirmWidget) then
+            self.lastDialogueAdvanceAt = now
+            Log.debug("Advanced dialogue line directly via PlayerInput A for non-primary user")
+            return true
+        end
+        return false
+    end
+
     function self.onTick(pc0)
         local nonPrimary, controller = isNonPrimaryOnPC0(pc0)
-        if not controller or not nonPrimary then
+        if not controller then
             return
         end
+        if not self.loggedFirstTick then
+            self.loggedFirstTick = true
+            local sub = ue.getCommonInputSubsystem(controller)
+            local okT, curType = pcall(function() return sub and sub:GetCurrentInputType() or "nil" end)
+            Log.debug("First ReceiveTick observed: user=%s nonPrimary=%s inputType=%s",
+                tostring(ue.getPlatformUserId(controller)), tostring(nonPrimary), tostring(okT and curType or "err"))
+        end
+        if not nonPrimary then
+            self.wasConfirmDown = false
+            return
+        end
+        handleNonPrimaryDialogueConfirm(controller)
         self.ensureGamepadIfSafe("tick", controller)
     end
 
-    -- Called when entering a dialogue line/overlay: clear any stale held prompt button that opened it
-    -- so Confirm works immediately on the very first line.
+    -- Called when entering a dialogue line/overlay: clear any stale held prompt button that opened it.
     function self.onDialoguePromptReady(reason)
         self.resetButtonState()
         self.syncExtraControllersToGamepad(reason)
+        local pc0 = ue.getPlayerController(0)
+        -- Snapshot A button state so holding A from the interaction prompt doesn't immediately skip line 1
+        local _, isDown = ue.isGamepadKeyPressed(pc0, "Gamepad_FaceButton_Bottom")
+        self.wasConfirmDown = isDown
+        self.lastDialogueAdvanceAt = nowFn()
+        local sub = pc0 and ue.getCommonInputSubsystem(pc0) or nil
+        local okT, curType = pcall(function() return sub and sub:GetCurrentInputType() or "nil" end)
+        Log.debug("DialoguePromptReady (%s): pc0User=%s inputType=%s",
+            tostring(reason), tostring(ue.getPlatformUserId(pc0)), tostring(okT and curType or "err"))
         self.ensureGamepadIfSafe(reason)
     end
 
     function self.onButtonPressed(btnObj)
         local key = buttonKey(btnObj)
         self.heldButtons[key] = { obj = btnObj, pressedAt = nowFn() }
+        if Log.debugEnabled then
+            local okN, name = pcall(function() return btnObj and btnObj:GetFName():ToString() or "nil" end)
+            local pc0 = ue.getPlayerController(0)
+            local sub = pc0 and ue.getCommonInputSubsystem(pc0) or nil
+            local okT, curType = pcall(function() return sub and sub:GetCurrentInputType() or "nil" end)
+            Log.debug("ButtonPressed %s | pc0User=%s inputType=%s",
+                tostring(okN and name or "?"), tostring(ue.getPlatformUserId(pc0)), tostring(okT and curType or "err"))
+        end
     end
 
     function self.onButtonReleased(btnObj)
@@ -258,6 +316,10 @@ function Gamepad.new(ue, clockFn)
             self.heldButtons[buttonKey(btnObj)] = nil
         else
             self.heldButtons = {}
+        end
+        if Log.debugEnabled then
+            local okN, name = pcall(function() return btnObj and btnObj:GetFName():ToString() or "nil" end)
+            Log.debug("ButtonReleased %s | anyHeld=%s", tostring(okN and name or "?"), tostring(hasHeldButton()))
         end
         if not hasHeldButton() then
             if self.deferredRestore then
@@ -271,6 +333,10 @@ function Gamepad.new(ue, clockFn)
     function self.onButtonClicked(btnObj)
         if btnObj ~= nil then
             self.heldButtons[buttonKey(btnObj)] = nil
+        end
+        if Log.debugEnabled then
+            local okN, name = pcall(function() return btnObj and btnObj:GetFName():ToString() or "nil" end)
+            Log.debug("ButtonClicked %s", tostring(okN and name or "?"))
         end
         if not hasHeldButton() and self.deferredRestore then
             self.ensureGamepadIfSafe("button_clicked_deferred")

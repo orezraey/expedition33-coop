@@ -482,6 +482,85 @@ function UE.getOverrideSoloBattleInfo(bm, partyNames)
     return true, (partyIdx or 0), soloChar
 end
 
+-- Reads gamepad button state directly from PC0's PlayerInput (bypasses Slate/CommonUI/AnalogCursor).
+function UE.isGamepadKeyPressed(pc, keyNameStr)
+    if not isValid(pc) then
+        return false, false
+    end
+    local ok, justPressed, isDown = pcall(function()
+        local key = { KeyName = FName(keyNameStr) }
+        local jp = pc:WasInputKeyJustPressed(key) == true
+        local down = pc:IsInputKeyDown(key) == true
+        return jp, down
+    end)
+    if ok then
+        return justPressed, isDown
+    end
+    return false, false
+end
+
+-- Returns (dialogueComponent, confirmPromptWidget, hasChoices) if PC0 currently has an active dialogue
+-- line waiting for Confirm input.
+function UE.getActiveDialogueWaitingForConfirm(pc0)
+    if not isValid(pc0) then
+        return nil, nil, false
+    end
+    local ok, dlgComp, confirmWidget, hasChoices = pcall(function()
+        if ensureStatics() and cache.gameplayStatics:IsGamePaused(pc0) == true then
+            return nil, nil, false
+        end
+        local comp = pc0.BP_DialogueSystemComponent
+        if not isValid(comp) then
+            return nil, nil, false
+        end
+        if comp:HasActiveDialogue() ~= true then
+            return nil, nil, false
+        end
+        if comp.IsWaitingForDialogInput ~= true then
+            return nil, nil, false
+        end
+
+        local hud = pc0.ExplorationHUDWidget
+        local overlay = isValid(hud) and hud.WBP_DialogueOverlay or nil
+        local container = isValid(overlay) and overlay.WBP_DialogueContainer or nil
+        if not isValid(container) then
+            return nil, nil, false
+        end
+        if container:IsActivated() ~= true then
+            return nil, nil, false
+        end
+
+        local choices = container.CurrentChoiceWidgets
+        local choiceCount = 0
+        if choices and choices.GetArrayNum then
+            choiceCount = choices:GetArrayNum()
+        elseif type(choices) == "table" then
+            choiceCount = #choices
+        end
+        local confirm = container.WBP_GM_PromptGeneric_Confirm
+        return comp, (isValid(confirm) and confirm or nil), (choiceCount > 0)
+    end)
+    if ok then
+        return dlgComp, confirmWidget, hasChoices
+    end
+    return nil, nil, false
+end
+
+function UE.advanceDialogueLine(dlgComp, confirmWidget)
+    if not isValid(dlgComp) then
+        return false
+    end
+    local ok, err = pcall(function()
+        local arg = isValid(confirmWidget) and confirmWidget or (CreateInvalidObject and CreateInvalidObject() or nil)
+        dlgComp:OnNextClicked(arg)
+    end)
+    if not ok then
+        Log.warn("Dialogue OnNextClicked failed: %s", tostring(err))
+        return false
+    end
+    return true
+end
+
 function UE.getCommonInputSubsystem(pc)
     if not isValid(pc) or not ensureStatics() then
         return nil

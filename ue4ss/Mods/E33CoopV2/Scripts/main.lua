@@ -256,6 +256,14 @@ hooks.addBlueprint("/Game/UI/Widgets/DialogueSystem/WBP_DialogueContainer.WBP_Di
     gamepad.onDialoguePromptReady("dialogue_line")
 end, true)
 
+hooks.addBlueprint("/Game/Gameplay/DialogueSystem/BP_DialogueSystemComponent.BP_DialogueSystemComponent_C:OnNextClicked", function(selfObj)
+    if Log.debugEnabled then
+        local okW, waiting = pcall(function() return selfObj:get().IsWaitingForDialogInput end)
+        Log.debug("Dialogue OnNextClicked (IsWaitingForDialogInput=%s, pc0User=%s)",
+            okW and tostring(waiting) or "?", tostring(UE.getPlatformUserId(UE.getPlayerController(0))))
+    end
+end, true)
+
 hooks.addBlueprint("/Game/UI/Widgets/FullScreenNotificationSystem/WBP_FullScreenNotificationContainer.WBP_FullScreenNotificationContainer_C:OnRelationshipUp", function()
     gamepad.onDialoguePromptReady("notification_relationship_up")
 end, true)
