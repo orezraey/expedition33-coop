@@ -9,7 +9,12 @@ local UE = {}
 
 local cache = {
     activeWorld = nil,
+    -- true between PrepareToChangeMap and the new map's ModActor: the outgoing world keeps ticking
+    -- during travel, so only an authoritative new-map actor may set the world again
+    worldInTransition = false,
     fsnContainer = nil,
+    gameInstance = nil,
+    gamepadKeys = {},
     gameplayStatics = nil,
     inputDeviceLibrary = nil,
     subsystemLibrary = nil,
@@ -52,7 +57,12 @@ end
 
 -- Tracks the live UWorld from a known current-map actor (e.g. ModActor, Controller_World)
 -- so map transitions never accidentally query an outgoing/dying UWorld via FindFirstOf("World").
-function UE.setWorldContext(actorOrWorld)
+-- `authoritative` = the actor belongs to the new map for sure (ModActor BeginPlay / SetupCoopController);
+-- other callers (ticks, input events) are ignored during a map transition.
+function UE.setWorldContext(actorOrWorld, authoritative)
+    if cache.worldInTransition and not authoritative then
+        return
+    end
     if not isValid(actorOrWorld) then
         return
     end
@@ -64,24 +74,34 @@ function UE.setWorldContext(actorOrWorld)
     end)
     if ok and isValid(w) then
         cache.activeWorld = w
+        cache.worldInTransition = false
     end
 end
 
 function UE.clearWorldContext()
     cache.activeWorld = nil
     cache.fsnContainer = nil
+    cache.worldInTransition = true
 end
 
 function UE.getWorld()
     if isValid(cache.activeWorld) then
         return cache.activeWorld
     end
-    -- Prefer GameInstance->GetWorld() before FindFirstOf("World") to avoid stale worlds during travel
-    local okGi, gi = pcall(FindFirstOf, "GameInstance")
-    if okGi and isValid(gi) then
+    -- Prefer GameInstance->GetWorld() before FindFirstOf("World") to avoid stale worlds during travel.
+    -- The GameInstance survives travel, so cache it (FindFirstOf walks the whole object list).
+    if not isValid(cache.gameInstance) then
+        local okGi, found = pcall(FindFirstOf, "GameInstance")
+        cache.gameInstance = (okGi and isValid(found)) and found or nil
+    end
+    local gi = cache.gameInstance
+    if gi then
         local okW, w = pcall(function() return gi:GetWorld() end)
         if okW and isValid(w) then
-            cache.activeWorld = w
+            -- During travel GameInstance may still point at the outgoing world: use it, don't cache it
+            if not cache.worldInTransition then
+                cache.activeWorld = w
+            end
             return w
         end
     end
@@ -490,7 +510,12 @@ function UE.isGamepadKeyPressed(pc, keyNameStr)
         return false, false
     end
     local ok, justPressed, isDown = pcall(function()
-        local key = { KeyName = FName(keyNameStr) }
+        -- Called every frame while P2/P3 own PC0: build each FKey once
+        local key = cache.gamepadKeys[keyNameStr]
+        if not key then
+            key = { KeyName = FName(keyNameStr) }
+            cache.gamepadKeys[keyNameStr] = key
+        end
         local jp = pc:WasInputKeyJustPressed(key) == true
         local down = pc:IsInputKeyDown(key) == true
         return jp, down
@@ -577,7 +602,9 @@ function UE.getActiveFullscreenNotificationConfirm(pc0, trackedNotif)
             return nil, nil, false
         end
 
-        local notif = isValid(trackedNotif) and trackedNotif or nil
+        -- The container pools notification widgets, so a tracked one can stay valid after it closed
+        -- (e.g. P1 confirmed it, or BP_OnDeactivated wasn't seen): only trust it while activated.
+        local notif = (isValid(trackedNotif) and trackedNotif:IsActivated() == true) and trackedNotif or nil
         if not notif then
             if not isValid(cache.fsnContainer) then
                 local found = FindFirstOf("WBP_FullScreenNotificationContainer_C")
@@ -650,7 +677,7 @@ function UE.getActiveModalPopupButton(pc0, trackedModal, action)
             return nil, nil, false
         end
 
-        local modal = isValid(trackedModal) and trackedModal or nil
+        local modal = (isValid(trackedModal) and trackedModal:IsActivated() == true) and trackedModal or nil
         if not modal and FindAllOf then
             local list = FindAllOf("WBP_ModalPopup_C")
             if type(list) == "table" then

@@ -18,8 +18,9 @@
 --     and NO button is held, immediately restore CommonInputSubsystem to Gamepad (1) on the same
 --     frame C++ drops it — eliminating keyboard icon flicker and keeping dialogue Confirm working
 --     100% reliably without ever canceling menu clicks!
---   - Keep extra CoopControllers (PC1/PC2) locked to Gamepad (1) with hardware cursor hidden,
---     and suppress PC0.bShowMouseCursor whenever PC0 is in Gamepad mode (preserving P1 M&K).
+--   - Keep extra CoopControllers (PC1/PC2) locked to Gamepad (1) with hardware cursor hidden.
+--   - PC0's cursor: always hidden while P2/P3 own it; for P1 it follows what the game last asked
+--     for at a hooked point (hidden during Rest), so CommonUI handles mouse vs gamepad as usual.
 
 local Log = require("e33coop.log")
 local Roster = require("e33coop.roster")
@@ -28,7 +29,9 @@ local Gamepad = {}
 
 local CURSOR_NONE = 0    -- EMouseCursor::None
 local CURSOR_DEFAULT = 1 -- EMouseCursor::Default
-local HELD_TIMEOUT_SEC = 1.5
+-- Safety net only (a widget destroyed mid-press never sends Released/Clicked). Must stay longer than
+-- any real press, including hold-to-confirm buttons, or the tick would cancel the press.
+local HELD_TIMEOUT_SEC = 10
 
 function Gamepad.new(ue, clockFn)
     local nowFn = clockFn or os.clock
@@ -118,18 +121,6 @@ function Gamepad.new(ue, clockFn)
         end)
     end
 
-    local function isPC0UsingGamepad(pc0, nonPrimary)
-        if nonPrimary then
-            return true
-        end
-        local sub = ue.getCommonInputSubsystem(pc0)
-        if not sub then
-            return false
-        end
-        local okGet, curType = pcall(function() return sub:GetCurrentInputType() end)
-        return okGet and curType == Roster.INPUT_TYPE_GAMEPAD
-    end
-
     function self.resetButtonState()
         self.heldButtons = {}
         self.deferredRestore = false
@@ -207,8 +198,11 @@ function Gamepad.new(ue, clockFn)
         setHardwareCursorVisible(pc0, false, CURSOR_NONE)
 
         if hasHeldButton() then
+            -- Runs every frame from the tick: log only when the deferral starts
+            if not self.deferredRestore then
+                Log.debug("Deferring CommonUI Gamepad restore (%s): button held", tostring(reason))
+            end
             self.deferredRestore = true
-            Log.debug("Deferring CommonUI Gamepad restore (%s): button held", tostring(reason))
             return false
         end
 

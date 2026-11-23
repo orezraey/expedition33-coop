@@ -104,7 +104,7 @@ end
 hooks.addBlueprint("/Game/Coop/ModActor.ModActor_C:ReceiveBeginPlay", function(selfObj)
     local ok, ma = pcall(function() return selfObj:get() end)
     if ok and ma then
-        UE.setWorldContext(ma)
+        UE.setWorldContext(ma, true)
     end
     warnIfV1PatchedPakDetected()
     control.onMapReady()
@@ -114,7 +114,7 @@ end)
 hooks.addBlueprint("/Game/Coop/ModActor.ModActor_C:SetupCoopController", function(selfObj)
     local ok, ma = pcall(function() return selfObj:get() end)
     if ok and ma then
-        UE.setWorldContext(ma)
+        UE.setWorldContext(ma, true)
     end
     control.onCoopControllerReady()
 end)
@@ -122,6 +122,7 @@ end)
 hooks.addBlueprint("/Game/Coop/ModActor.ModActor_C:Completed_5159FBB749F4C17CA0ECC19333961EAE", function(selfObj)
     local ok, ma = pcall(function() return selfObj:get() end)
     if ok and ma then
+        -- Async-load completion can still land in the outgoing map: not authoritative
         UE.setWorldContext(ma)
     end
     battle.onCoopConfigLoaded()
@@ -149,7 +150,7 @@ end)
 hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.BP_jRPG_Controller_World_C:PrepareToChangeMap", function(selfObj)
     local ok, pc0 = pcall(function() return selfObj:get() end)
     if ok and pc0 then
-        UE.setWorldContext(pc0)
+        UE.setWorldContext(pc0, true)
     end
     control.onPrepareToChangeMap()
     UE.clearWorldContext()

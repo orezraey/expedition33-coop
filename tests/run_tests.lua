@@ -601,8 +601,13 @@ runTest("gamepad: onTick repairs C++ MouseAndKeyboard drop for P2 dialogue witho
     gp.onTick(ue.pc0)
     assertEq(ue.state.inputType, Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD, "onTick respects held button")
 
-    -- If the widget is destroyed/clicked without release, timeout self-heals
+    -- A long press (hold-to-confirm) is still respected after 2 s
     fakeTime = 12.0
+    gp.onTick(ue.pc0)
+    assertEq(ue.state.inputType, Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD, "2 s hold still respected")
+
+    -- If the widget is destroyed/clicked without release, timeout self-heals
+    fakeTime = 21.0
     gp.onTick(ue.pc0)
     assertEq(ue.state.inputType, Roster.INPUT_TYPE_GAMEPAD, "stale held button auto-expired and Gamepad restored")
 end)
@@ -786,6 +791,154 @@ runTest("gamepad: confirms/cancels P2 non-hold ModalPopup while leaving hold-con
     fakeTime = 32.0
     gp.onTick(ue.pc0)
     assertEq(ue.state.modalConfirms, 1, "P1 modal input untouched")
+end)
+
+runTest("control: map restore throttles tick retries and falls back to Player 1 when the explorer never returns", function()
+    local ue = makeMockUE()
+    local cfg = Config.new(nil)
+    local gp = Gamepad.new(ue)
+    local now = 100.0
+    local ctrl = Control.new(ue, cfg, gp, function() return now end)
+
+    ue.state.pc0User = 1
+    ctrl.onStartTakeover()
+    ctrl.onPrepareToChangeMap()
+    ue.state.pc0User = 0
+
+    local attempts = 0
+    local origSet = ue.setController0User
+    ue.setController0User = function(targetId, reason)
+        if targetId == 1 then
+            attempts = attempts + 1
+            return false
+        end
+        return origSet(targetId, reason)
+    end
+
+    ctrl.onMapReady()
+    assertEq(attempts, 1, "one attempt on map ready")
+    ctrl.tryPendingMapRestore("tick")
+    ctrl.tryPendingMapRestore("tick")
+    now = 100.1
+    ctrl.tryPendingMapRestore("tick")
+    assertEq(attempts, 2, "tick retries are throttled to one per interval")
+
+    now = 110.5
+    ctrl.tryPendingMapRestore("tick")
+    assertEq(ctrl.pendingMapRestoreUserId, nil, "pending restore dropped after timeout")
+    assertEq(ctrl.getExplorationUserId(), 0, "exploration falls back to Player 1")
+    assertEq(ue.state.pc0User, 0, "PC0 stays with Player 1")
+
+    local before = attempts
+    now = 111.0
+    ctrl.tryPendingMapRestore("tick")
+    assertEq(attempts, before, "no more retries after giving up")
+end)
+
+-- Real ue.lua against stubbed UE4SS globals (the other tests replace ue.lua with a mock)
+local function makeUObject(fields)
+    local o = fields or {}
+    if o.valid == nil then
+        o.valid = true
+    end
+    o.IsValid = function(self) return self.valid end
+    return o
+end
+
+local function loadRealUE(globals)
+    package.loaded["e33coop.ue"] = nil
+    local saved = {}
+    for k, v in pairs(globals) do
+        saved[k] = _G[k]
+        _G[k] = v
+    end
+    local UEReal = require("e33coop.ue")
+    return UEReal, function()
+        for k in pairs(globals) do
+            _G[k] = saved[k]
+        end
+        package.loaded["e33coop.ue"] = nil
+    end
+end
+
+runTest("ue: fullscreen notification and modal lookups ignore a tracked widget that already closed", function()
+    local statics = makeUObject({ IsGamePaused = function() return false end })
+    local function activatable(active, extra)
+        local w = makeUObject(extra)
+        w.active = active
+        w.IsActivated = function(self) return self.active end
+        return w
+    end
+    local prompt = makeUObject({ IsActive = true })
+    local oldNotif = activatable(false, { ConfirmPromptBase = prompt })
+    local newNotif = activatable(true, { ConfirmPromptBase = prompt })
+    local queue = makeUObject({ GetActiveWidget = function() return newNotif end })
+    local container = makeUObject({ NotificationQueue = queue })
+
+    local btn = makeUObject({ IsVisible = function() return true end, GetIsEnabled = function() return true end })
+    local oldModal = activatable(false, { ConfirmButton = btn, IsHoldConfirm = false })
+    local newModal = activatable(true, { ConfirmButton = btn, IsHoldConfirm = false })
+
+    local UEReal, restore = loadRealUE({
+        StaticFindObject = function() return statics end,
+        FindFirstOf = function(name)
+            if name == "WBP_FullScreenNotificationContainer_C" then return container end
+            return nil
+        end,
+        FindAllOf = function(name)
+            if name == "WBP_ModalPopup_C" then return { oldModal, newModal } end
+            return nil
+        end,
+    })
+    local ok, err = pcall(function()
+        local pc0 = makeUObject()
+        local notif, p, active = UEReal.getActiveFullscreenNotificationConfirm(pc0, oldNotif)
+        assertEq(notif, newNotif, "falls back to the queue's active notification")
+        assertEq(p, prompt, "returns its confirm prompt")
+        assertEq(active, true, "reports a notification as active")
+
+        prompt.IsActive = false
+        local n2, _, a2 = UEReal.getActiveFullscreenNotificationConfirm(pc0, newNotif)
+        assertEq(n2, nil, "prompt not shown yet: nothing to confirm")
+        assertEq(a2, true, "but the notification still blocks the dialogue underneath")
+
+        local modal, mbtn = UEReal.getActiveModalPopupButton(pc0, oldModal, "confirm")
+        assertEq(modal, newModal, "falls back to the activated modal")
+        assertEq(mbtn, btn, "returns its confirm button")
+    end)
+    restore()
+    if not ok then error(err, 0) end
+end)
+
+runTest("ue: ticks from the outgoing map cannot re-cache its world during travel", function()
+    local oldWorld = makeUObject({ name = "old" })
+    local newWorld = makeUObject({ name = "new" })
+    local gi = makeUObject({ GetWorld = function() return oldWorld end })
+    local UEReal, restore = loadRealUE({
+        StaticFindObject = function() return makeUObject() end,
+        FindFirstOf = function(name)
+            if name == "GameInstance" then return gi end
+            return nil
+        end,
+    })
+    local ok, err = pcall(function()
+        local oldPc = makeUObject({ GetWorld = function() return oldWorld end })
+        local modActor = makeUObject({ GetWorld = function() return newWorld end })
+        UEReal.setWorldContext(oldPc, true)
+        assertEq(UEReal.getWorld(), oldWorld, "old map's world before travel")
+
+        UEReal.clearWorldContext()
+        UEReal.setWorldContext(oldPc)
+        assertEq(UEReal.getWorld(), oldWorld, "travel falls back to GameInstance's world")
+        gi.GetWorld = function() return newWorld end
+        assertEq(UEReal.getWorld(), newWorld, "and does not cache the outgoing world")
+
+        UEReal.setWorldContext(modActor, true)
+        gi.GetWorld = function() return oldWorld end
+        assertEq(UEReal.getWorld(), newWorld, "new map's ModActor sets the world again")
+    end)
+    restore()
+    if not ok then error(err, 0) end
 end)
 
 print(string.format("\nResults: %d passed, %d failed", passed, failed))

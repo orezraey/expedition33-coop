@@ -7,12 +7,20 @@ local Roster = require("e33coop.roster")
 
 local Control = {}
 
-function Control.new(ue, config, gamepad)
+-- How long a map restore may wait for the explorer's CoopController before falling back to Player 1,
+-- and how often the per-frame tick retries meanwhile.
+local MAP_RESTORE_TIMEOUT_SEC = 10
+local MAP_RESTORE_TICK_INTERVAL_SEC = 0.25
+
+function Control.new(ue, config, gamepad, clockFn)
+    local nowFn = clockFn or os.clock
     local self = {
         -- PlatformUserId.InternalId of the player exploring outside battle (persists across map changes in Lua)
         explorationUserId = nil,
         -- If ModActor::ReceiveBeginPlay ran before CoopControllers finished spawning, retry restore as soon as they exist
         pendingMapRestoreUserId = nil,
+        pendingMapRestoreSince = 0,
+        lastMapRestoreTickAt = 0,
         inBattle = false,
         battleEndState = Roster.BATTLE_END_NONE,
         battleEndHandedOver = false,
@@ -55,11 +63,28 @@ function Control.new(ue, config, gamepad)
         if target == nil or self.inBattle then
             return false
         end
+        local now = nowFn()
+        if source == "tick" then
+            -- Lookups are a handful of UFunction calls: don't run them on every frame
+            if (now - self.lastMapRestoreTickAt) < MAP_RESTORE_TICK_INTERVAL_SEC then
+                return false
+            end
+            self.lastMapRestoreTickAt = now
+        end
         if setPC0(target, "map_restore:" .. tostring(source)) then
             self.pendingMapRestoreUserId = nil
             Log.info("Restored exploration control to user %s (%s)", tostring(target), tostring(source))
             gamepad.onMapReady()
             return true
+        end
+        if (now - self.pendingMapRestoreSince) >= MAP_RESTORE_TIMEOUT_SEC then
+            -- The explorer's controller never showed up (pad unplugged, player left): give PC0 back to Player 1
+            self.pendingMapRestoreUserId = nil
+            local fallback = primaryId()
+            Log.warn("User %s did not come back after the map change (%ds); returning exploration to user %s",
+                tostring(target), MAP_RESTORE_TIMEOUT_SEC, tostring(fallback))
+            self.explorationUserId = fallback
+            setPC0(fallback, "map_restore_timeout")
         end
         return false
     end
@@ -74,6 +99,8 @@ function Control.new(ue, config, gamepad)
 
         if self.explorationUserId ~= nil then
             self.pendingMapRestoreUserId = self.explorationUserId
+            self.pendingMapRestoreSince = nowFn()
+            self.lastMapRestoreTickAt = 0
             if not self.tryPendingMapRestore("map_ready") then
                 Log.info("Map ready: deferring exploration restore to user %s until CoopControllers finish spawning",
                     tostring(self.explorationUserId))
