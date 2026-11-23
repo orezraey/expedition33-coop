@@ -97,13 +97,38 @@ local function makeMockUE()
         end,
     }
 
-    local pc0 = { IsValid = function() return true end }
+    local pc0 = { IsValid = function() return true end, bShowMouseCursor = false, CurrentMouseCursor = 1 }
+    local pc1 = { IsValid = function() return true end, bShowMouseCursor = true, CurrentMouseCursor = 1 }
+    local pc2 = { IsValid = function() return true end, bShowMouseCursor = true, CurrentMouseCursor = 1 }
+
+    local sub1 = {
+        inputType = Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD,
+        GetAddress = function() return 0x2234 end,
+        GetCurrentInputType = function(self) return self.inputType end,
+        SetCurrentInputType = function(self, t) self.inputType = t end,
+    }
+    local sub2 = {
+        inputType = Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD,
+        GetAddress = function() return 0x3234 end,
+        GetCurrentInputType = function(self) return self.inputType end,
+        SetCurrentInputType = function(self, t) self.inputType = t end,
+    }
 
     local ue = {
         state = state,
         sub = sub,
+        sub1 = sub1,
+        sub2 = sub2,
+        pc0 = pc0,
+        pc1 = pc1,
+        pc2 = pc2,
         isValid = function(o) return o ~= nil end,
-        getPlayerController = function(idx) return idx == 0 and pc0 or nil end,
+        getPlayerController = function(idx)
+            if idx == 0 then return pc0 end
+            if idx == 1 then return pc1 end
+            if idx == 2 then return pc2 end
+            return nil
+        end,
         getPlatformUserId = function(pc) return pc == pc0 and state.pc0User or nil end,
         getPrimaryPlatformUser = function() return state.activeUsers[1].raw, state.primaryId end,
         getAllActiveUsers = function() return state.activeUsers end,
@@ -127,7 +152,12 @@ local function makeMockUE()
         getOverrideSoloBattleInfo = function() return false, -1, nil end,
         getSpawnedBattleSpotCharacters = function() return {} end,
         getCharacterNameFromBattleActor = function(actor) return actor.charId end,
-        getCommonInputSubsystem = function(pc) return pc == pc0 and sub or nil end,
+        getCommonInputSubsystem = function(pc)
+            if pc == pc0 then return sub end
+            if pc == pc1 then return sub1 end
+            if pc == pc2 then return sub2 end
+            return nil
+        end,
         spawnTurnToast = function(text) state.toasts[#state.toasts + 1] = text; return true end,
     }
 
@@ -392,6 +422,45 @@ runTest("gamepad: click-safe CommonUI blocks MouseAndKeyboard drop for P2 withou
     gp.onButtonReleased()
     assertEq(ue.state.inputType, Roster.INPUT_TYPE_GAMEPAD, "restored to Gamepad after button release")
     assertEq(#ue.state.setInputTypeCalls, 1, "restored exactly once after release")
+end)
+
+runTest("gamepad: suppresses center-screen cursor blink on Flag/Rest and locks PC1/PC2 to Gamepad", function()
+    local ue = makeMockUE()
+    local gp = Gamepad.new(ue)
+
+    -- On map load, extra CoopControllers (PC1, PC2) move from MouseAndKeyboard -> Gamepad with cursor hidden
+    gp.onMapReady()
+    assertEq(ue.sub1.inputType, Roster.INPUT_TYPE_GAMEPAD, "PC1 locked to Gamepad")
+    assertEq(ue.sub2.inputType, Roster.INPUT_TYPE_GAMEPAD, "PC2 locked to Gamepad")
+    assertEq(ue.pc1.bShowMouseCursor, false, "PC1 cursor hidden")
+    assertEq(ue.pc2.bShowMouseCursor, false, "PC2 cursor hidden")
+
+    -- Any attempt to drop PC2 back to MouseAndKeyboard is blocked
+    local pc2Drop = makeParam(Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD)
+    gp.onSetCurrentInputTypePre(ue.sub2, pc2Drop)
+    assertEq(pc2Drop:get(), Roster.INPUT_TYPE_GAMEPAD, "PC2 MouseAndKeyboard drop blocked")
+
+    -- Opening Expedition Flag sets PC0.bShowMouseCursor = true, but on Gamepad we suppress it immediately
+    ue.state.pc0User = 0
+    ue.state.inputType = Roster.INPUT_TYPE_GAMEPAD
+    ue.pc0.bShowMouseCursor = true
+    ue.pc0.CurrentMouseCursor = 1
+    gp.syncCursorVisibility("OpenSavePointMenu", true)
+    assertEq(ue.pc0.bShowMouseCursor, false, "PC0 cursor hidden on Flag in Gamepad mode")
+    assertEq(ue.pc0.CurrentMouseCursor, 0, "PC0 CurrentMouseCursor set to None")
+
+    -- If Player 1 intentionally moves the mouse while Flag menu is open, cursor is restored
+    local p1Mouse = makeParam(Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD)
+    gp.onSetCurrentInputTypePre(ue.sub, p1Mouse)
+    assertEq(p1Mouse:get(), Roster.INPUT_TYPE_MOUSE_AND_KEYBOARD, "P1 M&K still allowed")
+    assertEq(ue.pc0.bShowMouseCursor, true, "P1 cursor restored when switching to M&K in menu")
+    assertEq(ue.pc0.CurrentMouseCursor, 1, "P1 CurrentMouseCursor restored to Default")
+
+    -- Switching back to Gamepad hides it again immediately
+    local p1Pad = makeParam(Roster.INPUT_TYPE_GAMEPAD)
+    gp.onSetCurrentInputTypePre(ue.sub, p1Pad)
+    assertEq(ue.pc0.bShowMouseCursor, false, "P1 cursor hidden again on Gamepad")
+    assertEq(ue.pc0.CurrentMouseCursor, 0, "P1 CurrentMouseCursor None again on Gamepad")
 end)
 
 runTest("ui: Settings menu labels/random option, save sanitization, and PlayerIndicator badges", function()

@@ -54,9 +54,15 @@ hooks.registerNative("/Script/CommonInput.CommonInputSubsystem:SetCurrentInputTy
     gamepad.onSetCurrentInputTypePre(selfObj:get(), newInputType)
 end)
 
-for _, modeFn in ipairs({ "SetInputMode_GameOnly", "SetInputMode_UIOnlyEx", "SetInputMode_GameAndUIEx" }) do
+hooks.registerNative("/Script/UMG.WidgetBlueprintLibrary:SetInputMode_GameOnly", function() end, function()
+    gamepad.ensureGamepadIfSafe("SetInputMode_GameOnly")
+    gamepad.syncCursorVisibility("SetInputMode_GameOnly", false)
+end)
+
+for _, modeFn in ipairs({ "SetInputMode_UIOnlyEx", "SetInputMode_GameAndUIEx" }) do
     hooks.registerNative("/Script/UMG.WidgetBlueprintLibrary:" .. modeFn, function() end, function()
         gamepad.ensureGamepadIfSafe(modeFn)
+        gamepad.syncCursorVisibility(modeFn, true)
     end)
 end
 
@@ -157,6 +163,36 @@ end
 
 hooks.addBlueprint("/Game/Coop/PlayerIndicator.PlayerIndicator_C:GetText", function(selfObj, returnValueParam)
     ui.onPlayerIndicatorGetText(selfObj:get(), returnValueParam)
+end, true)
+
+-- Hardware cursor suppression on menus & Expedition Flag (SavePointMenu / Rest animation)
+hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.BP_jRPG_Controller_World_C:OpenSavePointMenu", function()
+    gamepad.ensureGamepadIfSafe("OpenSavePointMenu")
+    gamepad.syncCursorVisibility("OpenSavePointMenu", true)
+end)
+
+hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.BP_jRPG_Controller_World_C:CloseSavePointMenu", function()
+    gamepad.syncCursorVisibility("CloseSavePointMenu", false)
+end)
+
+hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.BP_jRPG_Controller_World_C:SetInputModeUI", function(_, uiModeEnabledParam)
+    local ok, enabled = pcall(function() return uiModeEnabledParam:get() end)
+    gamepad.ensureGamepadIfSafe("SetInputModeUI")
+    gamepad.syncCursorVisibility("SetInputModeUI", ok and enabled == true or false)
+end)
+
+hooks.addBlueprint("/Game/jRPGTemplate/Blueprints/Basics/BP_jRPG_Controller_World.BP_jRPG_Controller_World_C:SetInputModeBattle", function(_, isTakingActionParam)
+    local ok, takingAction = pcall(function() return isTakingActionParam:get() end)
+    gamepad.syncCursorVisibility("SetInputModeBattle", not (ok and takingAction == true))
+end)
+
+hooks.addBlueprint("/Game/UI/Widgets/HUD_Exploration/WBP_SavePointMenu.WBP_SavePointMenu_C:BndEvt__WBP_SavePointMenu_RestButton_K2Node_ComponentBoundEvent_9_CommonButtonBaseClicked__DelegateSignature", function()
+    gamepad.ensureGamepadIfSafe("SavePointRest")
+    gamepad.syncCursorVisibility("SavePointRest", false)
+end, true)
+
+hooks.addBlueprint("/Game/UI/Widgets/HUD_Exploration/WBP_SavePointMenu.WBP_SavePointMenu_C:BP_OnDeactivated", function()
+    gamepad.syncCursorVisibility("SavePointDeactivated", nil)
 end, true)
 
 -- Dialogue & Fullscreen Notification Gamepad safety nets (e.g. Dialogue Confirm, RelationshipUp)

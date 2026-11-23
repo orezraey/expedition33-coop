@@ -50,10 +50,10 @@ function Control.new(ue, config, gamepad)
         if self.explorationUserId ~= nil then
             Log.info("Map ready: restoring exploration control to user %s", tostring(self.explorationUserId))
             ue.setController0User(self.explorationUserId, "map_ready")
-            gamepad.ensureGamepadIfSafe("map_ready")
         else
             ensureExplorationUserInitialized()
         end
+        gamepad.onMapReady()
     end
 
     -- Called after BP_jRPG_Controller_World::PrepareToChangeMap runs (Blueprint hooks are post-hooks).
